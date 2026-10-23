@@ -14,7 +14,7 @@ from tradingagents.web.app import app
 def http():
     # Started once, before the per-test network block: on Windows each event loop
     # opens a local socketpair, which that block would refuse.
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
         yield client
 
 

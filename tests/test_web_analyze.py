@@ -14,12 +14,13 @@ from langchain_core.messages import AIMessage
 
 from tradingagents.web import analyze
 from tradingagents.web.app import app
+from tradingagents.web.trading import SESSION_TOKEN
 
 
 @pytest.fixture(scope="module")
 def http():
     # Started once, before the per-test network block (see test_web_market).
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1", headers={"X-TA-Session": SESSION_TOKEN}) as client:
         yield client
 
 

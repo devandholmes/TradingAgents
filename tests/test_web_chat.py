@@ -1,22 +1,25 @@
 """Dashboard chat endpoint: SSE deltas from the quick-think model over a live snapshot.
 
 The market snapshot and the LLM client are fakes, so no request leaves the process.
+The trading service is switched off here; tests/test_chat_trading.py covers the account tools.
 """
 import json
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessageChunk
 
 from tradingagents.dataflows.errors import VendorUnavailableError
 from tradingagents.web import chat
 from tradingagents.web.app import app
+from tradingagents.web.trading import SESSION_TOKEN
 
 
 @pytest.fixture(scope="module")
 def http():
     # Started once, before the per-test network block (see test_web_market).
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1", headers={"X-TA-Session": SESSION_TOKEN}) as client:
         yield client
 
 
@@ -42,7 +45,10 @@ class FakeLLM:
     async def astream(self, messages):
         self.messages = messages
         for piece in self.pieces:
-            yield SimpleNamespace(content=piece)
+            yield AIMessageChunk(content=piece)
+
+    def bind_tools(self, tools):
+        raise AssertionError("no tools without a trading service")
 
 
 @pytest.fixture
@@ -56,6 +62,7 @@ def fake_llm(monkeypatch):
 
     monkeypatch.setattr(chat, "create_tier_client", fake_client)
     monkeypatch.setattr(chat.market, "market_snapshot", lambda symbol, interval: SNAPSHOT)
+    monkeypatch.setattr(chat, "_running_service", lambda: None)
     llm.calls = calls
     return llm
 

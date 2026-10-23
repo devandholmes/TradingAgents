@@ -1,4 +1,12 @@
-import { useEffect, useEffectEvent, useState } from "react"
+import {
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react"
+
+import { checkResponse, describe, sessionFetch } from "@/lib/api"
 
 // --- API shapes (see contract: GET /api/*) ---
 
@@ -37,30 +45,6 @@ export type Indicators = {
 
 export const INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"] as const
 export type Interval = (typeof INTERVALS)[number]
-
-function describe(err: unknown): string {
-  if (err instanceof TypeError)
-    return "Backend unreachable — is it running on :8000?"
-  return err instanceof Error ? err.message : String(err)
-}
-
-async function checkResponse(res: Response): Promise<Response> {
-  if (res.ok) return res
-  // Vite's proxy answers 500/502/504 with a non-JSON body when the backend is down.
-  if (res.status >= 500 && !res.headers.get("content-type")?.includes("json"))
-    throw new Error(
-      `Backend unreachable (HTTP ${res.status}) — is it running on :8000?`
-    )
-  let detail = `HTTP ${res.status}`
-  try {
-    const body = await res.json()
-    if (body?.detail)
-      detail += `: ${typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail)}`
-  } catch {
-    /* non-JSON error body */
-  }
-  throw new Error(detail)
-}
 
 /** GET a JSON endpoint; refetches every `refreshMs` when given. Keeps the last good data on refresh errors. */
 export function useApi<T>(url: string, refreshMs?: number) {
@@ -104,7 +88,7 @@ export function useApi<T>(url: string, refreshMs?: number) {
   }
 }
 
-/** POST `body` and call `onEvent` for every `data: {...}` server-sent event until the stream ends. */
+/** POST `body` (with X-TA-Session) and call `onEvent` for every `data: {...}` server-sent event until the stream ends. */
 export async function streamSSE(
   url: string,
   body: unknown,
@@ -113,17 +97,15 @@ export async function streamSSE(
 ): Promise<void> {
   let res: Response
   try {
-    res = await checkResponse(
-      await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-        },
-        body: JSON.stringify(body),
-        signal,
-      })
-    )
+    res = await sessionFetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal,
+    })
   } catch (err) {
     if (signal.aborted) throw err
     throw new Error(describe(err), { cause: err })
@@ -156,63 +138,219 @@ export async function streamSSE(
 }
 
 // --- Binance public market-data WebSocket (browser connects directly) ---
+//
+// ONE combined-stream socket for the whole app. Streams are ref-counted by listener; changes are
+// coalesced and sent as a single UNSUBSCRIBE + SUBSCRIBE pair, at most every FLUSH_GAP_MS, which
+// stays under Binance's 5 client messages/second limit. Reconnects with exponential backoff
+// (1s → 30s) and resubscribes everything that is still wanted via the connect URL.
 
-const WS_BASE = "wss://data-stream.binance.vision/stream?streams="
+const WS_URL = "wss://data-stream.binance.vision/stream"
+const FLUSH_GAP_MS = 600
 export type WsStatus = "connecting" | "open" | "closed"
+type StreamListener = (stream: string, data: unknown) => void
 
-/** Combined-stream socket with exponential-backoff reconnect (1s → 30s). */
+const streamListeners = new Map<string, Set<StreamListener>>()
+let socket: WebSocket | undefined
+let serverStreams = new Set<string>() // what the server is sending on `socket`
+let wsStatus: WsStatus = "connecting"
+const statusListeners = new Set<() => void>()
+let attempt = 0
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let flushTimer: ReturnType<typeof setTimeout> | undefined
+let lastFlush = 0
+let requestId = 0
+
+function setWsStatus(status: WsStatus) {
+  if (status === wsStatus) return
+  wsStatus = status
+  statusListeners.forEach((l) => l())
+}
+
+function connect() {
+  retryTimer = undefined
+  const streams = [...streamListeners.keys()]
+  if (!streams.length) return // reconnects on the next subscribe
+  setWsStatus("connecting")
+  const ws = (socket = new WebSocket(`${WS_URL}?streams=${streams.join("/")}`))
+  serverStreams = new Set(streams)
+  ws.onopen = () => {
+    attempt = 0
+    setWsStatus("open")
+    scheduleFlush() // streams added or dropped while connecting
+  }
+  ws.onmessage = (ev) => {
+    let msg: { stream?: string; data?: unknown }
+    try {
+      msg = JSON.parse(ev.data)
+    } catch {
+      return // malformed frame
+    }
+    const stream = msg?.stream
+    if (!stream) return // SUBSCRIBE/UNSUBSCRIBE acks
+    streamListeners.get(stream)?.forEach((l) => {
+      try {
+        l(stream, msg.data)
+      } catch (err) {
+        console.error(err)
+      }
+    })
+  }
+  ws.onclose = () => {
+    if (socket !== ws) return
+    socket = undefined
+    setWsStatus("closed")
+    const delay =
+      Math.min(30_000, 1000 * 2 ** attempt++) * (0.75 + Math.random() * 0.5)
+    retryTimer = setTimeout(connect, delay)
+  }
+}
+
+function flush() {
+  flushTimer = undefined
+  if (!socket) {
+    if (!retryTimer) connect()
+    return
+  }
+  if (socket.readyState !== WebSocket.OPEN) return
+  const wanted = new Set(streamListeners.keys())
+  const drop = [...serverStreams].filter((s) => !wanted.has(s))
+  const add = [...wanted].filter((s) => !serverStreams.has(s))
+  if (drop.length)
+    socket.send(
+      JSON.stringify({ method: "UNSUBSCRIBE", params: drop, id: ++requestId })
+    )
+  if (add.length)
+    socket.send(
+      JSON.stringify({ method: "SUBSCRIBE", params: add, id: ++requestId })
+    )
+  serverStreams = wanted
+  if (drop.length || add.length) lastFlush = Date.now()
+}
+
+// Deferred so a burst of mounts/unmounts (or StrictMode's double effects) nets out to one change.
+function scheduleFlush() {
+  if (flushTimer) return
+  flushTimer = setTimeout(
+    flush,
+    Math.max(0, lastFlush + FLUSH_GAP_MS - Date.now())
+  )
+}
+
+/** Add a listener for one stream on the shared socket; returns the unsubscribe function. */
+export function subscribeStream(
+  stream: string,
+  listener: StreamListener
+): () => void {
+  let set = streamListeners.get(stream)
+  if (!set) streamListeners.set(stream, (set = new Set()))
+  set.add(listener)
+  scheduleFlush()
+  return () => {
+    set.delete(listener)
+    if (!set.size && streamListeners.get(stream) === set)
+      streamListeners.delete(stream)
+    scheduleFlush()
+  }
+}
+
+function subscribeStatus(cb: () => void) {
+  statusListeners.add(cb)
+  return () => {
+    statusListeners.delete(cb)
+  }
+}
+
+/** Status of the shared market-data socket. */
+export function useStreamStatus(): WsStatus {
+  return useSyncExternalStore(subscribeStatus, () => wsStatus)
+}
+
+/** Listen to one stream (e.g. `btcusdt@kline_1h`) on the shared socket. */
 export function useBinanceStream(
-  streams: string,
-  onData: (stream: string, data: unknown) => void
+  stream: string,
+  onMessage: (stream: string, data: unknown) => void
 ): WsStatus {
-  const [state, setState] = useState<{ streams: string; status: WsStatus }>({
-    streams,
-    status: "connecting",
-  })
-  const handle = useEffectEvent(onData)
+  const handle = useEffectEvent(onMessage)
+  useEffect(
+    () => subscribeStream(stream, (s, data) => handle(s, data)),
+    [stream]
+  )
+  return useStreamStatus()
+}
 
-  useEffect(() => {
-    let ws: WebSocket | undefined
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let attempt = 0
-    const set = (status: WsStatus) => setState({ streams, status })
+// --- live prices from !miniTicker@arr, batched once per animation frame ---
 
-    const connect = () => {
-      ws = new WebSocket(WS_BASE + streams)
-      ws.onopen = () => {
-        attempt = 0
-        set("open")
-      }
-      ws.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data)
-          if (msg?.stream) handle(msg.stream, msg.data)
-        } catch {
-          /* ignore malformed frame */
-        }
-      }
-      ws.onclose = () => {
-        set("closed")
-        const delay =
-          Math.min(30_000, 1000 * 2 ** attempt++) * (0.75 + Math.random() * 0.5)
-        timer = setTimeout(() => {
-          set("connecting")
-          connect()
-        }, delay)
-      }
+export type LivePrice = { price: number; pct: number }
+type MiniTicker = { s: string; c: string; o: string }
+
+const TICKER_STREAM = "!miniTicker@arr"
+const prices = new Map<string, LivePrice>() // entries are replaced, never mutated
+let priceVersion = 0
+const staged = new Map<string, MiniTicker>() // latest raw ticker per symbol since last frame
+let frame = 0
+const priceListeners = new Set<() => void>()
+let stopTicker: (() => void) | undefined
+
+function onTickers(_stream: string, data: unknown) {
+  if (!Array.isArray(data)) return
+  for (const t of data as MiniTicker[]) staged.set(t.s, t)
+  // rAF also pauses in background tabs; `staged` stays bounded (one entry per symbol).
+  if (!frame) frame = requestAnimationFrame(applyTickers)
+}
+
+function applyTickers() {
+  frame = 0
+  let changed = false
+  for (const t of staged.values()) {
+    const price = +t.c
+    const open = +t.o
+    const pct = open ? ((price - open) / open) * 100 : 0
+    const prev = prices.get(t.s)
+    if (prev && prev.price === price && prev.pct === pct) continue
+    prices.set(t.s, { price, pct })
+    changed = true
+  }
+  staged.clear()
+  if (!changed) return
+  priceVersion++
+  priceListeners.forEach((l) => l())
+}
+
+function subscribePrices(cb: () => void) {
+  if (!priceListeners.size)
+    stopTicker = subscribeStream(TICKER_STREAM, onTickers)
+  priceListeners.add(cb)
+  return () => {
+    priceListeners.delete(cb)
+    if (!priceListeners.size) stopTicker?.()
+  }
+}
+
+/** Snapshot getter that keeps its object identity until one of *its* symbols changes. */
+function priceView(key: string) {
+  const symbols = key ? key.split(",") : []
+  let version = -1
+  let snap: Record<string, LivePrice> = {}
+  return () => {
+    if (version === priceVersion) return snap
+    version = priceVersion
+    const next: Record<string, LivePrice> = {}
+    let changed = false
+    for (const s of symbols) {
+      const p = prices.get(s)
+      if (p) next[s] = p
+      if (p !== snap[s]) changed = true
     }
-    connect()
+    if (changed) snap = next
+    return snap
+  }
+}
 
-    return () => {
-      clearTimeout(timer)
-      if (ws) {
-        ws.onclose = null
-        ws.close()
-      }
-    }
-  }, [streams])
-
-  return state.streams === streams ? state.status : "connecting"
+/** Live last price and 24h % for `symbols` (e.g. "BTCUSDT"); re-renders only when one of them changes. */
+export function useLivePrices(symbols: string[]): Record<string, LivePrice> {
+  const key = symbols.join(",")
+  const getSnapshot = useMemo(() => priceView(key), [key])
+  return useSyncExternalStore(subscribePrices, getSnapshot)
 }
 
 // --- formatting ---

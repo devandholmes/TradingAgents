@@ -19,12 +19,15 @@ def _blank_settings_overlay():
     names = set(os.environ)
     for filename in (".env", ".env.enterprise"):
         names |= set(dotenv_values(find_dotenv(filename, usecwd=True)))
+    # Trading keys and limits too: with keys set, the app's lifespan would reach Binance.
     for name in names:
-        if name.startswith("TRADINGAGENTS_"):
+        if name.startswith(("TRADINGAGENTS_", "TRADING_", "BINANCE_")):
             os.environ[name] = ""
 
 
 _blank_settings_overlay()
+# The app's lifespan would otherwise open the Binance price stream; test_trading_streams fakes it.
+os.environ["TRADING_PRICE_STREAM"] = "off"
 
 
 def _own_file_locations():

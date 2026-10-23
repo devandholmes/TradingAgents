@@ -17,11 +17,12 @@ from stockstats import wrap
 
 from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.vendors.binance import client
+from tradingagents.trading.guard import SYMBOL_PATTERN
 
 Interval = Literal[
     "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"
 ]
-Symbol = Annotated[str, Query(pattern=r"^[A-Za-z0-9]{2,20}$")]
+Symbol = Annotated[str, Query(pattern=SYMBOL_PATTERN)]
 
 # Candles the indicators are computed over; enough for the 50-bar SMA to settle.
 INDICATOR_BARS = 200
