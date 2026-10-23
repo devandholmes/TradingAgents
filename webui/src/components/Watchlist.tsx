@@ -1,0 +1,144 @@
+import { useState } from "react"
+import { PlusIcon, XIcon } from "lucide-react"
+
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group"
+import { Skeleton } from "@/components/ui/skeleton"
+import { fmtPct, fmtPrice } from "@/lib/market"
+import { cn } from "@/lib/utils"
+
+export type Tick = { price: number; prev?: number; pct: number }
+
+const SYMBOL_RE = /^[A-Z0-9]{5,20}$/
+
+export function Watchlist({
+  symbols,
+  ticks,
+  selected,
+  onSelect,
+  onAdd,
+  onRemove,
+}: {
+  symbols: string[]
+  ticks: Record<string, Tick>
+  selected: string
+  onSelect: (s: string) => void
+  onAdd: (s: string) => void
+  onRemove: (s: string) => void
+}) {
+  const [draft, setDraft] = useState("")
+  const candidate = draft.trim().toUpperCase()
+  const valid = SYMBOL_RE.test(candidate) && !symbols.includes(candidate)
+
+  return (
+    <Card size="sm" className="min-h-0 gap-2">
+      <CardHeader>
+        <CardTitle>Watchlist</CardTitle>
+      </CardHeader>
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-2 px-0">
+        <form
+          className="px-(--card-spacing)"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (!valid) return
+            onAdd(candidate)
+            setDraft("")
+          }}
+        >
+          <InputGroup>
+            <InputGroupInput
+              aria-label="Add symbol"
+              placeholder="Add symbol…"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              className="font-mono uppercase placeholder:normal-case"
+            />
+            <InputGroupAddon align="inline-end">
+              <InputGroupButton
+                type="submit"
+                size="icon-xs"
+                disabled={!valid}
+                aria-label="Add symbol"
+              >
+                <PlusIcon />
+              </InputGroupButton>
+            </InputGroupAddon>
+          </InputGroup>
+        </form>
+        <ul className="min-h-0 flex-1 overflow-y-auto">
+          {symbols.map((s) => {
+            const t = ticks[s]
+            const flash =
+              t?.prev == null || t.price === t.prev
+                ? ""
+                : t.price > t.prev
+                  ? "flash-up"
+                  : "flash-down"
+            return (
+              <li key={s} className="group/row relative">
+                <button
+                  type="button"
+                  onClick={() => onSelect(s)}
+                  aria-current={s === selected}
+                  className={cn(
+                    "grid w-full grid-cols-[1fr_auto] items-baseline gap-x-3 border-l-2 border-transparent py-1.5 pr-9 pl-(--card-spacing) text-left hover:bg-muted/60",
+                    s === selected && "border-primary bg-muted"
+                  )}
+                >
+                  <span className="font-mono text-sm font-medium">
+                    {s.replace(/USDT$/, "")}
+                    <span className="text-muted-foreground">
+                      {s.endsWith("USDT") ? "/USDT" : ""}
+                    </span>
+                  </span>
+                  {t ? (
+                    // Re-keyed on every price change so the flash animation restarts.
+                    <span
+                      key={t.price}
+                      className={cn(
+                        "rounded px-1 text-right font-mono text-sm tabular-nums",
+                        flash
+                      )}
+                    >
+                      {fmtPrice(t.price)}
+                    </span>
+                  ) : (
+                    <Skeleton className="h-4 w-16" />
+                  )}
+                  <span className="text-xs text-muted-foreground">24h</span>
+                  {t ? (
+                    <span
+                      className={cn(
+                        "px-1 text-right font-mono text-xs tabular-nums",
+                        t.pct >= 0 ? "text-up" : "text-down"
+                      )}
+                    >
+                      {fmtPct(t.pct)}
+                    </span>
+                  ) : (
+                    <Skeleton className="mt-1 h-3 w-10 justify-self-end" />
+                  )}
+                </button>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`Remove ${s}`}
+                  onClick={() => onRemove(s)}
+                  className="absolute top-1/2 right-2 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
+                >
+                  <XIcon />
+                </Button>
+              </li>
+            )
+          })}
+        </ul>
+      </CardContent>
+    </Card>
+  )
+}
