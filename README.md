@@ -156,6 +156,18 @@ For local models with Ollama:
 docker compose --profile ollama run --rm tradingagents-ollama
 ```
 
+### Live dashboard (Binance)
+
+A web dashboard shows the live crypto market from Binance's public market data (no Binance account or key, and it never places orders): a watchlist, a candlestick chart with indicators, 24h gainers, losers and volume, a quick chat with your quick-thinking model that sees the live numbers, and a full multi-agent analysis streamed as it runs.
+
+```bash
+pip install ".[web]"
+cd webui && npm install && npm run build && cd ..
+tradingagents-web          # http://127.0.0.1:8000
+```
+
+The analysis runs the crypto pipeline with Binance candles first and Yahoo Finance as the fallback (`binance,yfinance`). See [webui/README.md](webui/README.md) for the frontend dev server.
+
 ### Required APIs
 
 TradingAgents supports multiple LLM providers. Set the API key for your chosen provider:

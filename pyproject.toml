@@ -41,9 +41,15 @@ dev = [
 bedrock = [
     "langchain-aws>=1.7.9",
 ]
+# Live Binance dashboard server: pip install "tradingagents[web]", then tradingagents-web.
+web = [
+    "fastapi>=0.161",
+    "uvicorn[standard]>=0.30",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"
+tradingagents-web = "tradingagents.web.__main__:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "tradingagents.__version__"}
