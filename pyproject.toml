@@ -44,7 +44,9 @@ bedrock = [
 # Live Binance dashboard server: pip install "tradingagents[web]", then tradingagents-web.
 web = [
     "fastapi>=0.161",
+    "httpx>=0.27",
     "uvicorn[standard]>=0.30",
+    "websockets>=13",   # tradingagents/trading/streams.py uses websockets.asyncio.client (13+)
 ]
 
 [project.scripts]

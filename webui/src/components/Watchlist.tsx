@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { memo, useState } from "react"
 import { PlusIcon, XIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -10,23 +10,19 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group"
 import { Skeleton } from "@/components/ui/skeleton"
-import { fmtPct, fmtPrice } from "@/lib/market"
+import { fmtPct, fmtPrice, useLivePrices } from "@/lib/market"
 import { cn } from "@/lib/utils"
-
-export type Tick = { price: number; prev?: number; pct: number }
 
 const SYMBOL_RE = /^[A-Z0-9]{5,20}$/
 
 export function Watchlist({
   symbols,
-  ticks,
   selected,
   onSelect,
   onAdd,
   onRemove,
 }: {
   symbols: string[]
-  ticks: Record<string, Tick>
   selected: string
   onSelect: (s: string) => void
   onAdd: (s: string) => void
@@ -72,73 +68,96 @@ export function Watchlist({
           </InputGroup>
         </form>
         <ul className="min-h-0 flex-1 overflow-y-auto">
-          {symbols.map((s) => {
-            const t = ticks[s]
-            const flash =
-              t?.prev == null || t.price === t.prev
-                ? ""
-                : t.price > t.prev
-                  ? "flash-up"
-                  : "flash-down"
-            return (
-              <li key={s} className="group/row relative">
-                <button
-                  type="button"
-                  onClick={() => onSelect(s)}
-                  aria-current={s === selected}
-                  className={cn(
-                    "grid w-full grid-cols-[1fr_auto] items-baseline gap-x-3 border-l-2 border-transparent py-1.5 pr-9 pl-(--card-spacing) text-left hover:bg-muted/60",
-                    s === selected && "border-primary bg-muted"
-                  )}
-                >
-                  <span className="font-mono text-sm font-medium">
-                    {s.replace(/USDT$/, "")}
-                    <span className="text-muted-foreground">
-                      {s.endsWith("USDT") ? "/USDT" : ""}
-                    </span>
-                  </span>
-                  {t ? (
-                    // Re-keyed on every price change so the flash animation restarts.
-                    <span
-                      key={t.price}
-                      className={cn(
-                        "rounded px-1 text-right font-mono text-sm tabular-nums",
-                        flash
-                      )}
-                    >
-                      {fmtPrice(t.price)}
-                    </span>
-                  ) : (
-                    <Skeleton className="h-4 w-16" />
-                  )}
-                  <span className="text-xs text-muted-foreground">24h</span>
-                  {t ? (
-                    <span
-                      className={cn(
-                        "px-1 text-right font-mono text-xs tabular-nums",
-                        t.pct >= 0 ? "text-up" : "text-down"
-                      )}
-                    >
-                      {fmtPct(t.pct)}
-                    </span>
-                  ) : (
-                    <Skeleton className="mt-1 h-3 w-10 justify-self-end" />
-                  )}
-                </button>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={`Remove ${s}`}
-                  onClick={() => onRemove(s)}
-                  className="absolute top-1/2 right-2 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
-                >
-                  <XIcon />
-                </Button>
-              </li>
-            )
-          })}
+          {symbols.map((s) => (
+            <WatchRow
+              key={s}
+              symbol={s}
+              selected={s === selected}
+              onSelect={onSelect}
+              onRemove={onRemove}
+            />
+          ))}
         </ul>
       </CardContent>
     </Card>
   )
 }
+
+/** One row; subscribes to its own symbol so a tick re-renders only this row. */
+const WatchRow = memo(function WatchRow({
+  symbol: s,
+  selected,
+  onSelect,
+  onRemove,
+}: {
+  symbol: string
+  selected: boolean
+  onSelect: (s: string) => void
+  onRemove: (s: string) => void
+}) {
+  const t = useLivePrices([s])[s]
+  // Flash direction is derived from the previous price seen by this row.
+  const [last, setLast] = useState(t?.price)
+  const [flash, setFlash] = useState("")
+  if (t && t.price !== last) {
+    setLast(t.price)
+    setFlash(last == null ? "" : t.price > last ? "flash-up" : "flash-down")
+  }
+
+  return (
+    <li className="group/row relative">
+      <button
+        type="button"
+        onClick={() => onSelect(s)}
+        aria-current={selected}
+        className={cn(
+          "grid w-full grid-cols-[1fr_auto] items-baseline gap-x-3 border-l-2 border-transparent py-1.5 pr-9 pl-(--card-spacing) text-left hover:bg-muted/60",
+          selected && "border-primary bg-muted"
+        )}
+      >
+        <span className="font-mono text-sm font-medium">
+          {s.replace(/USDT$/, "")}
+          <span className="text-muted-foreground">
+            {s.endsWith("USDT") ? "/USDT" : ""}
+          </span>
+        </span>
+        {t ? (
+          // Re-keyed on every price change so the flash animation restarts.
+          <span
+            key={t.price}
+            className={cn(
+              "rounded px-1 text-right font-mono text-sm tabular-nums",
+              flash
+            )}
+          >
+            {fmtPrice(t.price)}
+          </span>
+        ) : (
+          <Skeleton className="h-4 w-16" />
+        )}
+        <span className="text-xs text-muted-foreground">24h</span>
+        {t ? (
+          <span
+            className={cn(
+              "px-1 text-right font-mono text-xs tabular-nums",
+              t.pct >= 0 ? "text-up" : "text-down"
+            )}
+          >
+            {fmtPct(t.pct)}
+          </span>
+        ) : (
+          <Skeleton className="mt-1 h-3 w-10 justify-self-end" />
+        )}
+      </button>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        aria-label={`Remove ${s}`}
+        onClick={() => onRemove(s)}
+        className="absolute top-1/2 right-2 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
+      >
+        <XIcon />
+      </Button>
+    </li>
+  )
+})

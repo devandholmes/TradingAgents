@@ -1,13 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import {
-  CandlestickSeries,
-  ColorType,
-  CrosshairMode,
-  HistogramSeries,
-  createChart,
-  type ISeriesApi,
-  type UTCTimestamp,
-} from "lightweight-charts"
+import type { IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts"
 
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -31,7 +23,6 @@ import {
   type Indicators,
   type Interval,
   type Kline,
-  type WsStatus,
 } from "@/lib/market"
 import { cn } from "@/lib/utils"
 
@@ -56,6 +47,9 @@ type BinanceKline = {
   v: string
 }
 
+// Split out of the entry chunk (~160 kB); the fetch starts as soon as this module loads.
+const chartLib = import("lightweight-charts")
+
 const volumeColor = (open: number, close: number) =>
   close >= open ? `${UP}55` : `${DOWN}55`
 
@@ -63,12 +57,10 @@ export function PriceChart({
   symbol,
   interval,
   onIntervalChange,
-  onStatus,
 }: {
   symbol: string
   interval: Interval
   onIntervalChange: (i: Interval) => void
-  onStatus: (s: WsStatus) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const seriesRef = useRef<Charts | null>(null)
@@ -87,45 +79,64 @@ export function PriceChart({
     60_000
   )
 
+  const [chartReady, setChartReady] = useState(false)
+
   // Create the chart once.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
-    const chart = createChart(el, {
-      autoSize: true,
-      layout: {
-        background: { type: ColorType.Solid, color: "transparent" },
-        textColor: TEXT,
-        fontFamily: "ui-monospace, 'JetBrains Mono', Consolas, monospace",
-        fontSize: 11,
-      },
-      grid: { vertLines: { color: GRID }, horzLines: { color: GRID } },
-      crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: GRID },
-      timeScale: {
-        borderColor: GRID,
-        timeVisible: true,
-        secondsVisible: false,
-      },
-    })
-    const candles = chart.addSeries(CandlestickSeries, {
-      upColor: UP,
-      downColor: DOWN,
-      borderVisible: false,
-      wickUpColor: UP,
-      wickDownColor: DOWN,
-    })
-    const volume = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: "volume" },
-      priceScaleId: "",
-      lastValueVisible: false,
-      priceLineVisible: false,
-    })
-    volume.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } })
-    seriesRef.current = { candles, volume, precision: 2 }
+    let chart: IChartApi | undefined
+    let cancelled = false
+    void chartLib.then(
+      ({
+        CandlestickSeries,
+        ColorType,
+        CrosshairMode,
+        HistogramSeries,
+        createChart,
+      }) => {
+        if (cancelled) return
+        chart = createChart(el, {
+          autoSize: true,
+          layout: {
+            background: { type: ColorType.Solid, color: "transparent" },
+            textColor: TEXT,
+            fontFamily: "ui-monospace, 'JetBrains Mono', Consolas, monospace",
+            fontSize: 11,
+          },
+          grid: { vertLines: { color: GRID }, horzLines: { color: GRID } },
+          crosshair: { mode: CrosshairMode.Normal },
+          rightPriceScale: { borderColor: GRID },
+          timeScale: {
+            borderColor: GRID,
+            timeVisible: true,
+            secondsVisible: false,
+          },
+        })
+        const candles = chart.addSeries(CandlestickSeries, {
+          upColor: UP,
+          downColor: DOWN,
+          borderVisible: false,
+          wickUpColor: UP,
+          wickDownColor: DOWN,
+        })
+        const volume = chart.addSeries(HistogramSeries, {
+          priceFormat: { type: "volume" },
+          priceScaleId: "",
+          lastValueVisible: false,
+          priceLineVisible: false,
+        })
+        volume
+          .priceScale()
+          .applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } })
+        seriesRef.current = { candles, volume, precision: 2 }
+        setChartReady(true)
+      }
+    )
     return () => {
+      cancelled = true
       seriesRef.current = null
-      chart.remove()
+      chart?.remove()
     }
   }, [])
 
@@ -152,9 +163,9 @@ export function PriceChart({
       }))
     )
     if (rows.length) setPrecision(s, rows[rows.length - 1].close)
-  }, [history.data])
+  }, [history.data, chartReady])
 
-  const status = useBinanceStream(
+  useBinanceStream(
     `${symbol.toLowerCase()}@kline_${interval}`,
     (_stream, data) => {
       const k = (data as { k?: BinanceKline }).k
@@ -181,8 +192,6 @@ export function PriceChart({
       setLive({ key, close: bar.close, open: bar.open })
     }
   )
-
-  useEffect(() => onStatus(status), [status, onStatus])
 
   const last = live?.key === key ? live : null
 
