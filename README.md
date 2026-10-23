@@ -168,6 +168,22 @@ tradingagents-web          # http://127.0.0.1:8000
 
 The analysis runs the crypto pipeline with Binance candles first and Yahoo Finance as the fallback (`binance,yfinance`). See [webui/README.md](webui/README.md) for the frontend dev server.
 
+The **Portfolio** tab totals your Binance Spot balances and any EVM wallets you add (Ethereum, BNB Chain, Base, Arbitrum; read-only, valued at live Binance prices). The **Wallets** tab connects a browser wallet (address only, nothing is signed) or adds watch-only addresses, and shows the Binance account the agents trade on.
+
+Agents in the chat can check balances and place or cancel Binance Spot orders when you ask them to. Every order, from the chat or the API, goes through the same server-side guard: a kill switch (off until you turn it on in the header), a per-order limit, a daily cap and an allowed-symbol list. Every attempt is written to `~/.tradingagents/trades.jsonl`. The keys stay on the server, and the code has no withdrawal or transfer calls.
+
+```bash
+TRADING_MODE=testnet                    # testnet (default) or live
+BINANCE_TESTNET_API_KEY=...             # https://testnet.binance.vision
+BINANCE_TESTNET_API_SECRET=...
+# BINANCE_API_KEY= / BINANCE_API_SECRET=   live: enable Spot trading, disable withdrawals, restrict to your IP
+TRADING_MAX_ORDER_USDT=50
+TRADING_DAILY_CAP_USDT=200
+TRADING_ALLOWED_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT
+```
+
+Real orders are placed only with `TRADING_MODE=live` and live keys. The server listens on 127.0.0.1 only and refuses requests from other sites.
+
 ### Required APIs
 
 TradingAgents supports multiple LLM providers. Set the API key for your chosen provider:
