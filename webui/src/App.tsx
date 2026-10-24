@@ -24,9 +24,12 @@ import { cn } from "@/lib/utils"
 
 // Lazy chunks keep viem, react-markdown and the workspace code out of the main bundle.
 const loadAssistant = () => import("@/components/assistant/AssistantWorkspace")
+const loadStrategies = () =>
+  import("@/components/strategies/StrategiesWorkspace")
 const loadPortfolio = () => import("@/components/Portfolio")
 const loadWallets = () => import("@/components/Wallets")
 const AssistantWorkspace = lazy(loadAssistant)
+const StrategiesWorkspace = lazy(loadStrategies)
 const Portfolio = lazy(loadPortfolio)
 const Wallets = lazy(loadWallets)
 
@@ -34,6 +37,7 @@ const TABS: { value: Tab; label: string; preload?: () => Promise<unknown> }[] =
   [
     { value: "dashboard", label: "Dashboard" },
     { value: "assistant", label: "Assistant", preload: loadAssistant },
+    { value: "strategies", label: "Strategies", preload: loadStrategies },
     { value: "portfolio", label: "Portfolio", preload: loadPortfolio },
     { value: "wallets", label: "Wallets", preload: loadWallets },
   ]
@@ -95,6 +99,11 @@ export default function App() {
         <TabsContent value="assistant" tabIndex={-1} className="flex min-h-0 flex-col">
           <LazyTab>
             <AssistantWorkspace />
+          </LazyTab>
+        </TabsContent>
+        <TabsContent value="strategies" tabIndex={-1} className="flex min-h-0 flex-col">
+          <LazyTab>
+            <StrategiesWorkspace />
           </LazyTab>
         </TabsContent>
         <TabsContent value="portfolio" tabIndex={-1} className="min-h-0 overflow-y-auto">

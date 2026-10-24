@@ -1,4 +1,26 @@
+# One project name from any checkout (worktrees too), so they share the one Postgres volume.
+name: tradingagents
+
 services:
+  # Postgres for candles, strategy results and analysis runs: docker compose up -d postgres.
+  # Credentials come from .env (POSTGRES_USER/PASSWORD/DB); reachable from this machine only.
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tradingagents}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}   # required: the image refuses to start without one
+      POSTGRES_DB: ${POSTGRES_DB:-tradingagents}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   tradingagents:
     build: .
     env_file:
@@ -34,3 +56,4 @@ services:
 volumes:
   tradingagents_data:
   ollama_data:
+  pgdata:

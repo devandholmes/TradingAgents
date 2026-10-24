@@ -6,6 +6,10 @@ server, and requires the per-process session token on every state-changing
 request and on every trading route.
 """
 
+import asyncio
+import os
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,11 +22,12 @@ from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket
 
+from tradingagents import db
 from tradingagents.dataflows.errors import NoMarketDataError, VendorError
 from tradingagents.trading import TradeRejected
 from tradingagents.trading.service import running_service
 from tradingagents.trading.streams import running_streams
-from tradingagents.web import analyze, chat, market, trading
+from tradingagents.web import ai_strategy, analyze, chat, market, strategies, trading
 
 WEBUI_DIST = Path(__file__).resolve().parents[2] / "webui" / "dist"
 
@@ -62,8 +67,23 @@ class LocalOnly:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    async with running_service() as service, running_streams(service):
-        yield
+    # Migrated first; an offline database leaves its features offline and the rest running.
+    async with db.running_database() as database, running_service() as service, running_streams(service):
+        runs = await asyncio.to_thread(analyze.load_runs, db.database_url() if database else None)
+        # The strategy engine is a child process, so its CPU work never touches this event loop.
+        engine = (subprocess.Popen([sys.executable, "-m", "tradingagents.strategies.engine"])
+                  if database and os.environ.get("TRADINGAGENTS_ENGINE", "").strip().lower() != "off" else None)
+        try:
+            async with ai_strategy.running_scheduler(runs, database is not None):
+                yield
+        finally:
+            if engine:
+                engine.terminate()
+                try:
+                    await asyncio.to_thread(engine.wait, 10)
+                except subprocess.TimeoutExpired:   # never let a stuck engine skip the cleanup below
+                    engine.kill()
+            await asyncio.to_thread(runs.close)
 
 
 app = FastAPI(title="TradingAgents Dashboard", lifespan=lifespan)
@@ -103,6 +123,8 @@ app.include_router(chat.router)
 app.include_router(analyze.router)
 app.include_router(trading.router)
 app.include_router(trading.ws_router)
+app.include_router(strategies.router)
+app.include_router(strategies.ws_router)
 
 # Frontend routes rank below API routes, so unknown paths fall back to index.html.
 if WEBUI_DIST.is_dir():
