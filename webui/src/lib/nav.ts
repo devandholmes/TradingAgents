@@ -1,8 +1,14 @@
 import { useSyncExternalStore } from "react"
 
-// --- hash routing: #/ (dashboard), #/assistant?run=<id>, #/portfolio, #/wallets ---
+// --- hash routing: #/ (dashboard), #/assistant?run=<id>, #/strategies, #/portfolio, #/wallets ---
 
-export const TABS = ["dashboard", "assistant", "portfolio", "wallets"] as const
+export const TABS = [
+  "dashboard",
+  "assistant",
+  "strategies",
+  "portfolio",
+  "wallets",
+] as const
 export type Tab = (typeof TABS)[number]
 
 function parse(hash: string): { tab: Tab; query: string } {

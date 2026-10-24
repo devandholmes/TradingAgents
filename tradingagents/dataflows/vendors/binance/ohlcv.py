@@ -4,10 +4,13 @@ Same signatures and output text as the yfinance implementations
 (``get_YFin_data_online`` / ``get_stock_stats_indicators_window``) so the two
 are interchangeable in a vendor chain. Only crypto pairs are served; any other
 symbol raises ``NoMarketDataError`` so a ``"binance,yfinance"`` chain falls
-through to the next vendor. Candles are daily, in UTC.
+through to the next vendor. Candles are daily, in UTC. They are read from
+Postgres (``tradingagents.db``) when it holds every day asked for, from
+Binance's REST API otherwise.
 """
 
-from datetime import datetime, timedelta, timezone
+import logging
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import pandas as pd
@@ -19,12 +22,40 @@ from tradingagents.dataflows.vendors.binance.client import get_klines, to_binanc
 from tradingagents.dataflows.vendors.yahoo.market import INDICATOR_DESCRIPTIONS
 from tradingagents.dataflows.vendors.yahoo.ohlcv import _assert_ohlcv_not_stale
 
+logger = logging.getLogger(__name__)
+
 # Binance's maximum candles per klines request.
 KLINES_PAGE = 1000
 
 # Extra history fetched ahead of an indicator window so long averages
 # (200 SMA) and EMA-based series (MACD) have settled by the first reported day.
 INDICATOR_WARMUP_DAYS = 1000
+
+
+def _stored_daily(pair: str, start_s: int, end_s: int) -> list[dict] | None:
+    """The daily candles opened in ``[start_s, end_s)`` from Postgres, when every one is stored.
+
+    None, and the caller asks Binance, when a day is missing (only closed candles
+    are stored, so a range ending today always is), when no database is set up,
+    or when it cannot be reached.
+    """
+    try:   # psycopg comes with the [web] extra
+        import psycopg
+
+        from tradingagents.db import connect, database_url
+        from tradingagents.db.candles import read_candles
+    except ImportError:
+        return None
+    if not database_url():
+        return None
+    try:
+        with connect() as conn:
+            rows = read_candles(conn, pair, "1d", datetime.fromtimestamp(start_s, UTC),
+                                datetime.fromtimestamp(end_s, UTC))
+    except psycopg.Error as exc:
+        logger.debug("Stored candles unavailable for %s: %s", pair, exc)
+        return None
+    return rows if rows and len(rows) == (end_s - start_s) // 86400 else None
 
 
 def _daily_candles(symbol: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
@@ -38,18 +69,20 @@ def _daily_candles(symbol: str, start_date: str, end_date: str) -> tuple[pd.Data
     if pair is None:
         raise NoMarketDataError(symbol, None, "Binance lists crypto pairs only")
 
-    start_s = int(datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
-    end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    start_s = int(datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC).timestamp())
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC)
     end_s = int((end_dt + timedelta(days=1)).timestamp())  # exclusive
 
-    rows = []
-    start_ms, end_ms = start_s * 1000, end_s * 1000 - 1
-    while start_ms <= end_ms:
-        page = get_klines(pair, "1d", KLINES_PAGE, start_ms, end_ms)
-        rows += page
-        if len(page) < KLINES_PAGE:
-            break
-        start_ms = (page[-1]["time"] + 1) * 1000
+    rows = _stored_daily(pair, start_s, end_s)
+    if rows is None:
+        rows = []
+        start_ms, end_ms = start_s * 1000, end_s * 1000 - 1
+        while start_ms <= end_ms:
+            page = get_klines(pair, "1d", KLINES_PAGE, start_ms, end_ms)
+            rows += page
+            if len(page) < KLINES_PAGE:
+                break
+            start_ms = (page[-1]["time"] + 1) * 1000
 
     # Enforce the window here too rather than trusting the endpoint's filter.
     rows = [row for row in rows if start_s <= row["time"] < end_s]

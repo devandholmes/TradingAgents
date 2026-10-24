@@ -45,6 +45,7 @@ bedrock = [
 web = [
     "fastapi>=0.161",
     "httpx>=0.27",
+    "psycopg[binary,pool]>=3.2",   # Postgres: candles, strategy results, analysis runs (tradingagents/db)
     "uvicorn[standard]>=0.30",
     "websockets>=13",   # tradingagents/trading/streams.py uses websockets.asyncio.client (13+)
 ]
@@ -52,6 +53,7 @@ web = [
 [project.scripts]
 tradingagents = "cli.main:app"
 tradingagents-web = "tradingagents.web.__main__:main"
+tradingagents-engine = "tradingagents.strategies.engine:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "tradingagents.__version__"}
@@ -61,7 +63,7 @@ include = ["tradingagents*", "cli*"]
 
 [tool.setuptools.package-data]
 cli = ["static/*"]
-tradingagents = ["assets/*.svg"]
+tradingagents = ["assets/*.svg", "db/migrations/*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

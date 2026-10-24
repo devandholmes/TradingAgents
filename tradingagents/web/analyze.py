@@ -3,8 +3,9 @@
 A run is driven like the CLI's (``cli/run.py``): the same initial state, the
 same ``stream_run`` loop, the same report sections and the same decision record.
 Each run works in a thread of its own, so it outlives the request that started
-it and the page that watches it. Its events are kept in memory and in a JSON
-file per run; any number of clients replay them over SSE and follow the rest live.
+it and the page that watches it. Its events are kept in memory and in Postgres
+(a JSON file per run while the database is offline); any number of clients
+replay them over SSE and follow the rest live.
 """
 
 from __future__ import annotations
@@ -22,13 +23,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated
 
+import psycopg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
 from cli.display import MessageBuffer
 from cli.models import AnalystType, AssetType
 from cli.prompts import filter_analysts_for_asset_type
+from tradingagents import db
 from tradingagents.agents.rating import run_rating
 from tradingagents.dataflows.symbols import crypto_base, normalize_symbol
 from tradingagents.default_config import build_default_config
@@ -70,6 +75,29 @@ TEAMS = ("research", "trader", "risk", "decision")
 
 def _now() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat(timespec="milliseconds")
+
+
+def _iso(ts: datetime.datetime | None) -> str | None:
+    """A timestamp read back from Postgres, written as _now() writes one."""
+    return None if ts is None else ts.astimezone(datetime.UTC).isoformat(timespec="milliseconds")
+
+
+_UPSERT_RUN = """
+INSERT INTO analysis_runs (id, symbol, ticker, date, status, rating, started_at, finished_at, duration_s, error,
+                           analysts)
+VALUES (%(id)s, %(symbol)s, %(ticker)s, %(date)s, %(status)s, %(rating)s, %(started_at)s, %(finished_at)s,
+        %(duration_s)s, %(error)s, %(analysts)s)
+ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, rating = EXCLUDED.rating,
+    finished_at = EXCLUDED.finished_at, duration_s = EXCLUDED.duration_s, error = EXCLUDED.error
+"""
+_INSERT_EVENT = """
+INSERT INTO analysis_events (run_id, seq, ts, type, payload) VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (run_id, seq) DO NOTHING
+"""
+_UPSERT_REPORT = """
+INSERT INTO analysis_reports (run_id, section, stage, title, content) VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (run_id, section) DO UPDATE SET stage = EXCLUDED.stage, title = EXCLUDED.title, content = EXCLUDED.content
+"""
 
 
 def run_config() -> dict:
@@ -188,23 +216,71 @@ class Run:
 
 
 class Runs:
-    """The runs of this server and of earlier ones, each saved as ``<directory>/<id>.json``."""
+    """The runs of this server and of earlier ones.
+
+    With a database they are saved in Postgres (``analysis_runs``, ``analysis_events``,
+    ``analysis_reports``), and the JSON files of ``directory`` that it does not hold
+    yet are imported into it; without one, each is saved as ``<directory>/<id>.json``.
+    Neither: kept in memory only. Saving happens on the runs' own threads and
+    request threads, never on the event loop; a failed save is logged and retried
+    with the next one, and the run goes on.
+    """
 
     # ponytail: one lock for every run; per-run locks if many runs ever stream at once.
-    def __init__(self, directory: Path):
+    # ponytail: every run is held in memory with its events; page from Postgres if history grows large.
+    def __init__(self, directory: Path | None = None, database_url: str | None = None):
         self.directory = directory
         self.lock = threading.Lock()
         self.save_lock = threading.Lock()
         self.runs: dict[str, Run] = {}
-        for path in directory.glob("*.json"):
+        self.pool: ConnectionPool | None = None
+        self.saved: dict[str, int] = {}   # per run, the events already in Postgres
+        if database_url:
+            self.pool = ConnectionPool(database_url, min_size=1, max_size=2, kwargs=db.SESSION,
+                                       timeout=db.CONNECT_TIMEOUT + 1, open=True)
             try:
-                run = Run(**json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, ValueError, TypeError):
-                logger.warning("Skipping unreadable analysis run %s", path)
-                continue
+                self.runs = self._read_database()
+            except BaseException:
+                self.pool.close()
+                raise
+            self.saved = {run_id: len(run.events) for run_id, run in self.runs.items()}
+        new = {run.id: run for run in self._read_files() if run.id not in self.runs}
+        for run in sorted([*self.runs.values(), *new.values()], key=lambda r: r.started_at):
             self.runs[run.id] = run
             if run.status == "running":   # its thread went with the server that ran it
                 self.finish(run, "error", error="server restarted")
+            elif self.pool is not None and run.id in new:
+                self.save(run)   # imported once: the database holds it from now on
+
+    def close(self) -> None:
+        if self.pool is not None:
+            self.pool.close()
+
+    def _read_files(self) -> list[Run]:
+        runs = []
+        for path in self.directory.glob("*.json") if self.directory else ():
+            try:
+                runs.append(Run(**json.loads(path.read_text(encoding="utf-8"))))
+            except (OSError, ValueError, TypeError):
+                logger.warning("Skipping unreadable analysis run %s", path)
+        return runs
+
+    def _read_database(self) -> dict[str, Run]:
+        with self.pool.connection() as conn:
+            runs = {
+                row[0]: Run(id=row[0], symbol=row[1], ticker=row[2], date=str(row[3]), analysts=row[4],
+                            started_at=_iso(row[5]), status=row[6], rating=row[7], finished_at=_iso(row[8]),
+                            error=row[9])
+                for row in conn.execute(
+                    "SELECT id, symbol, ticker, date, analysts, started_at, status, rating, finished_at, error"
+                    " FROM analysis_runs"
+                )
+            }
+            for run_id, seq, ts, kind, payload in conn.execute(
+                "SELECT run_id, seq, ts, type, payload FROM analysis_events ORDER BY run_id, seq"
+            ):
+                runs[run_id].events.append({"id": seq, "ts": _iso(ts), "type": kind, **payload})
+        return runs
 
     def list(self, limit: int) -> list[dict]:
         with self.lock:
@@ -268,6 +344,11 @@ class Runs:
     def save(self, run: Run) -> None:
         # The snapshot is taken under the save lock, so the last write is the newest state.
         with self.save_lock:
+            if self.pool is not None:
+                self._save_database(run)
+                return
+            if self.directory is None:
+                return
             with self.lock:
                 text = json.dumps(run.state())
             self.directory.mkdir(parents=True, exist_ok=True)
@@ -275,6 +356,28 @@ class Runs:
             tmp = path.with_suffix(".tmp")
             tmp.write_text(text, encoding="utf-8")
             os.replace(tmp, path)
+
+    def _save_database(self, run: Run) -> None:
+        """Upsert the run's row and add the events (and the reports among them) not saved yet."""
+        with self.lock:
+            summary, error = run.summary(), run.error
+            events = run.events[self.saved.get(run.id, 0):]
+        reports = [e for e in events if e["type"] == "report"]
+        try:
+            with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
+                cur.execute(_UPSERT_RUN, {**summary, "error": error, "analysts": Jsonb(summary["analysts"])})
+                cur.executemany(_INSERT_EVENT, [
+                    (run.id, e["id"], e["ts"], e["type"],
+                     Jsonb({k: v for k, v in e.items() if k not in ("id", "ts", "type")}))
+                    for e in events
+                ])
+                cur.executemany(_UPSERT_REPORT, [
+                    (run.id, e["section"], e["stage"], e["title"], e["content"]) for e in reports
+                ])
+        except psycopg.Error as exc:
+            logger.warning("Analysis %s not saved (%s); retrying with its next event", run.id, db.describe(exc))
+            return
+        self.saved[run.id] = self.saved.get(run.id, 0) + len(events)
 
     def detail(self, run: Run) -> dict:
         with self.lock:
@@ -299,7 +402,20 @@ class Runs:
 
 
 # Beside the results directory: ~/.tradingagents/web_runs unless TRADINGAGENTS_RESULTS_DIR moves it.
-RUNS = Runs(Path(build_default_config()["results_dir"]).parent / "web_runs")
+RUNS_DIR = Path(build_default_config()["results_dir"]).parent / "web_runs"
+# In memory until the app's lifespan loads the saved runs (load_runs).
+RUNS = Runs()
+
+
+def load_runs(database_url: str | None) -> Runs:
+    """Replace RUNS with the saved runs: from Postgres when it is up, else from the JSON files. Blocking."""
+    global RUNS
+    try:
+        RUNS = Runs(RUNS_DIR, database_url)
+    except psycopg.Error as exc:
+        logger.warning("Analysis history not read from Postgres (%s); using %s", db.describe(exc), RUNS_DIR)
+        RUNS = Runs(RUNS_DIR)
+    return RUNS
 
 
 class AnalysisRequest(BaseModel):

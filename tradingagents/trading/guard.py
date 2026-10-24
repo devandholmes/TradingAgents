@@ -25,7 +25,7 @@ from tradingagents.trading.client import SymbolRules
 logger = logging.getLogger(__name__)
 
 Mode = Literal["testnet", "live"]
-Source = Literal["user", "agent"]
+Source = Literal["user", "agent", "bot"]
 COUNTED = ("filled", "new", "error")   # audit statuses whose notional counts toward the daily cap
 SYMBOL_PATTERN = r"^[A-Za-z0-9]{2,20}$"
 

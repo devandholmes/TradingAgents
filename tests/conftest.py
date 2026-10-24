@@ -28,6 +28,8 @@ def _blank_settings_overlay():
 _blank_settings_overlay()
 # The app's lifespan would otherwise open the Binance price stream; test_trading_streams fakes it.
 os.environ["TRADING_PRICE_STREAM"] = "off"
+# Nor spawn the strategy engine process; tests/test_engine.py drives an Engine itself.
+os.environ["TRADINGAGENTS_ENGINE"] = "off"
 
 
 def _own_file_locations():
