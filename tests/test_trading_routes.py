@@ -43,7 +43,8 @@ def test_session_returns_a_token(http):
     ("DELETE", "/api/orders/BTCUSDT/1"),
     ("GET", "/api/trades/recent"),
     ("POST", "/api/chat"),
-    ("POST", "/api/analyze"),
+    ("POST", "/api/analyses"),
+    ("DELETE", "/api/analyses/r_missing"),
 ])
 def test_token_is_required(http, fake, method, path):
     assert http.request(method, path).status_code == 403

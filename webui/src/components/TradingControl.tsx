@@ -3,7 +3,7 @@ import { useId } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
-import { setTradingEnabled, useTradingStatus } from "@/lib/api"
+import { setTradingEnabled, useTradingStatus } from "@/lib/tradingStatus"
 import { cn } from "@/lib/utils"
 
 /** Trading mode badge + kill switch. Rendered in the header on every tab and on the Wallets tab. */

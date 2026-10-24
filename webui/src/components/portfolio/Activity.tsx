@@ -44,7 +44,9 @@ export function Activity({
     <div className="grid gap-2 lg:grid-cols-2">
       <Card size="sm" className="gap-2">
         <CardHeader>
-          <CardTitle>Open orders</CardTitle>
+          <CardTitle>
+            <h2>Open orders</h2>
+          </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-2 px-0">
           {orders.error && <InlineError message={orders.error} />}
@@ -66,7 +68,9 @@ export function Activity({
 
       <Card size="sm" className="gap-2">
         <CardHeader>
-          <CardTitle>Recent trades</CardTitle>
+          <CardTitle>
+            <h2>Recent trades</h2>
+          </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-2 px-0">
           {trades.error && <InlineError message={trades.error} />}
@@ -74,7 +78,7 @@ export function Activity({
             trades.loading && <Rows />
           ) : !trades.data.length ? (
             <Muted>
-              No trades yet — orders placed here or by the assistant appear in
+              No trades yet. Orders placed here or by the assistant appear in
               this log.
             </Muted>
           ) : (
@@ -110,7 +114,7 @@ function OrderRow({
     )
   }
   return (
-    <li className="flex items-center gap-3 border-b px-(--card-spacing) py-1.5 last:border-0">
+    <li className="flex items-center gap-3 border-b px-(--card-spacing) py-2 transition-colors last:border-0 hover:bg-surface/70">
       <Side side={o.side} />
       <div className="min-w-0 flex-1">
         <div className="font-mono font-medium">{o.symbol}</div>
@@ -121,7 +125,7 @@ function OrderRow({
           )}
         </div>
       </div>
-      <div className="text-right font-mono text-xs tabular-nums">
+      <div className="text-right font-mono text-xs">
         <div>
           {o.executed_qty}/{o.orig_qty}
         </div>
@@ -150,7 +154,7 @@ function TradeRow({ entry: t }: { entry: AuditEntry }) {
         ? `${r.quote_amount} USDT`
         : ""
   return (
-    <li className="flex items-center gap-3 border-b px-(--card-spacing) py-1.5 last:border-0">
+    <li className="flex items-center gap-3 border-b px-(--card-spacing) py-2 transition-colors last:border-0 hover:bg-surface/70">
       {r.side === "BUY" || r.side === "SELL" ? <Side side={r.side} /> : null}
       <div className="min-w-0 flex-1">
         <div className="font-mono font-medium">
@@ -195,7 +199,7 @@ function Side({ side }: { side: "BUY" | "SELL" }) {
 
 function Muted({ children }: { children: React.ReactNode }) {
   return (
-    <p className="px-(--card-spacing) text-sm text-muted-foreground">
+    <p className="px-(--card-spacing) py-2 text-sm text-pretty text-muted-foreground">
       {children}
     </p>
   )

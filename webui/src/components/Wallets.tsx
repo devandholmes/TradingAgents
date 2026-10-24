@@ -39,7 +39,7 @@ import {
 } from "@/components/ui/input-group"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
-import { useTradingStatus } from "@/lib/api"
+import { useTradingStatus } from "@/lib/tradingStatus"
 import { hasWallet, useWallets, type Wallet } from "@/lib/wallets"
 import { cn } from "@/lib/utils"
 
@@ -79,7 +79,9 @@ function BinanceAccountCard() {
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle>Binance Spot account</CardTitle>
+        <CardTitle>
+          <h2>Binance Spot account</h2>
+        </CardTitle>
         <CardDescription>
           API keys stay on the server. Agents trade only within these limits.
         </CardDescription>
@@ -116,7 +118,7 @@ function BinanceAccountCard() {
               {rows.map(([k, v]) => (
                 <div key={k} className="contents">
                   <dt className="text-muted-foreground">{k}</dt>
-                  <dd className="font-mono tabular-nums">{v}</dd>
+                  <dd className="font-medium tabular-nums">{v}</dd>
                 </div>
               ))}
               <dt className="text-muted-foreground">Symbols</dt>
@@ -220,7 +222,9 @@ function BrowserWalletsCard() {
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle>Browser wallet</CardTitle>
+        <CardTitle>
+          <h2>Browser wallet</h2>
+        </CardTitle>
         <CardDescription>
           Read-only: shares your address, never signs or sends transactions.
         </CardDescription>
@@ -282,7 +286,7 @@ function addressError(value: string): string | null {
     return "Not an EVM address (0x followed by 40 hex characters)."
   // Mixed case must match the EIP-55 checksum; all-lower/upper is accepted as-is.
   if (!isAddress(value))
-    return "Checksum mismatch — check the address for typos."
+    return "Checksum mismatch. Check the address for typos."
   if (hasWallet(value)) return "Already in your list."
   return null
 }
@@ -299,7 +303,9 @@ function WatchAddressCard() {
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle>Watch-only address</CardTitle>
+        <CardTitle>
+          <h2>Watch-only address</h2>
+        </CardTitle>
         <CardDescription>
           Track any address on Ethereum, BNB Chain, Base and Arbitrum.
         </CardDescription>
@@ -364,7 +370,9 @@ function WalletListCard() {
   return (
     <Card size="sm" className="lg:col-span-2">
       <CardHeader>
-        <CardTitle>Your wallets</CardTitle>
+        <CardTitle>
+          <h2>Your wallets</h2>
+        </CardTitle>
         <CardDescription>
           Stored in this browser only. Balances appear on the Portfolio tab.
         </CardDescription>

@@ -217,7 +217,9 @@ export default function Portfolio() {
     <div className="flex flex-col gap-2 p-2">
       <Card size="sm">
         <CardHeader>
-          <CardTitle>Portfolio</CardTitle>
+          <CardTitle>
+            <h2>Portfolio</h2>
+          </CardTitle>
           <CardAction className="flex items-center gap-2">
             <BinanceBadge status={account.status} mode={account.mode} />
             <Button
@@ -236,13 +238,13 @@ export default function Portfolio() {
           </CardAction>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-end gap-x-8 gap-y-3">
+          <div className="flex flex-wrap items-end gap-x-10 gap-y-3">
             <div>
-              <div className="text-xs text-muted-foreground">Total value</div>
+              <div className="text-2xs text-muted-foreground">Total value</div>
               {binanceLoading && !rows.length ? (
-                <Skeleton className="mt-1 h-8 w-48" />
+                <Skeleton className="mt-1 h-9 w-56" />
               ) : (
-                <div className="font-mono text-2xl font-semibold tabular-nums">
+                <div className="font-mono text-display font-semibold tracking-tight">
                   {usd(total)}{" "}
                   <span className="text-sm font-normal text-muted-foreground">
                     USDT
@@ -251,10 +253,10 @@ export default function Portfolio() {
               )}
             </div>
             <div>
-              <div className="text-xs text-muted-foreground">24h change</div>
+              <div className="text-2xs text-muted-foreground">24h change</div>
               <div
                 className={cn(
-                  "font-mono text-sm tabular-nums",
+                  "font-mono text-sm",
                   change.abs > 0
                     ? "text-up"
                     : change.abs < 0
@@ -268,8 +270,8 @@ export default function Portfolio() {
             </div>
             {subtotals.map(([source, value]) => (
               <div key={source}>
-                <div className="text-xs text-muted-foreground">{source}</div>
-                <div className="font-mono text-sm tabular-nums">
+                <div className="text-2xs text-muted-foreground">{source}</div>
+                <div className="font-mono text-sm">
                   {usd(value)}
                 </div>
               </div>
@@ -307,9 +309,11 @@ export default function Portfolio() {
 
       <Card size="sm" className="gap-2">
         <CardHeader>
-          <CardTitle>Holdings</CardTitle>
+          <CardTitle>
+            <h2>Holdings</h2>
+          </CardTitle>
           {(dustCount > 0 || (!wallets.length && rows.length > 0)) && (
-            <CardAction className="flex items-center gap-3">
+            <CardAction className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
               {!wallets.length && rows.length > 0 && (
                 <Button variant="link" size="sm" asChild>
                   <a href="#/wallets">
@@ -318,7 +322,7 @@ export default function Portfolio() {
                 </Button>
               )}
               {dustCount > 0 && (
-                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <label className="flex items-center gap-2 text-xs whitespace-nowrap text-muted-foreground">
                   <Switch
                     size="sm"
                     checked={showSmall}
@@ -352,7 +356,7 @@ export default function Portfolio() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="text-xs text-muted-foreground">
+                <thead className="text-2xs text-muted-foreground">
                   <tr className="border-b">
                     <th className="py-1.5 pl-(--card-spacing) text-left font-normal">
                       Asset
@@ -455,7 +459,9 @@ function AllocationBar({
           <li key={asset} className="flex items-center gap-1.5">
             <span className={cn("size-2 rounded-full", color(i))} />
             <span className="font-mono text-foreground">{asset}</span>
-            {((value / total) * 100).toFixed(1)}%
+            <span className="font-mono">
+              {((value / total) * 100).toFixed(1)}%
+            </span>
           </li>
         ))}
       </ul>
@@ -482,7 +488,7 @@ const HoldingRow = memo(function HoldingRow({
   value?: number
 }) {
   return (
-    <tr className="border-b last:border-0 hover:bg-muted/40">
+    <tr className="border-b transition-colors last:border-0 hover:bg-surface/70">
       <td className="py-1.5 pl-(--card-spacing) font-mono font-medium">
         {asset}
       </td>
@@ -492,18 +498,18 @@ const HoldingRow = memo(function HoldingRow({
           {detail}
         </div>
       </td>
-      <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+      <td className="px-3 py-1.5 text-right font-mono">
         {fmtAmount(amount)}
       </td>
-      <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+      <td className="px-3 py-1.5 text-right font-mono">
         {price == null ? "—" : fmtPrice(price)}
       </td>
-      <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+      <td className="px-3 py-1.5 text-right font-mono">
         {value == null ? "—" : usd(value)}
       </td>
       <td
         className={cn(
-          "py-1.5 pr-(--card-spacing) text-right font-mono tabular-nums",
+          "py-1.5 pr-(--card-spacing) text-right font-mono",
           pct == null || pct === 0
             ? "text-muted-foreground"
             : pct > 0
