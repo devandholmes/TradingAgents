@@ -1,6 +1,13 @@
 import { useEffect, useState, useSyncExternalStore } from "react"
 
-import { apiFetch, describe, useTradingStatus } from "@/lib/api"
+import { apiFetch, describe } from "@/lib/api"
+import { fmtPrice } from "@/lib/market"
+import { toast } from "@/lib/toast"
+import {
+  applyStatusEvent,
+  refreshTradingStatus,
+  useTradingStatus,
+} from "@/lib/tradingStatus"
 
 // --- API shapes (see contract: /api/account, /api/orders*, /api/trades/recent, /ws/account) ---
 
@@ -13,6 +20,7 @@ export type Order = {
   price: number
   orig_qty: number
   executed_qty: number
+  quote_qty?: number
   status: string
   time: number
 }
@@ -41,7 +49,7 @@ type AccountSnapshot = {
 type AccountMessage =
   | { type: "snapshot" | "balances"; balances: Balance[] }
   | { type: "order"; order: Order }
-  | { type: "status"; state?: string }
+  | { type: "status"; state?: string; mode?: string; enabled?: boolean }
 
 export type AccountStatus = "loading" | "live" | "offline" | "unconfigured"
 
@@ -80,6 +88,40 @@ let connection: AbortController | undefined // set while the account stream is w
 let accountAttempt = 0
 let accountRetry: ReturnType<typeof setTimeout> | undefined
 let idleTimer: ReturnType<typeof setTimeout> | undefined
+let hadSnapshot = false // a later snapshot means the stream reconnected
+
+const qty = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 8 })
+
+/** One toast per order state change; the order id key lets "filled" replace "partly filled". */
+function orderToast(o: Order) {
+  const side = o.side === "BUY" ? "Buy" : "Sell"
+  const what = `${side} ${qty(o.orig_qty)} ${o.symbol}`
+  const at = o.price ? ` at ${fmtPrice(o.price)}` : ""
+  const key = `order:${o.order_id}`
+  switch (o.status) {
+    case "FILLED":
+      return toast({
+        kind: "success",
+        key,
+        title: `${o.side === "BUY" ? "Bought" : "Sold"} ${qty(o.executed_qty)} ${o.symbol}`,
+        body: `Filled${at}${o.quote_qty ? ` for ${o.quote_qty.toFixed(2)} USDT` : ""}.`,
+      })
+    case "PARTIALLY_FILLED":
+      return toast({
+        kind: "info",
+        key,
+        title: `${side} order partly filled`,
+        body: `${qty(o.executed_qty)} of ${qty(o.orig_qty)} ${o.symbol}${at}.`,
+      })
+    case "CANCELED":
+      return toast({ kind: "info", key, title: "Order cancelled", body: `${what}${at}.` })
+    case "EXPIRED":
+    case "EXPIRED_IN_MATCH":
+      return toast({ kind: "warn", key, title: "Order expired", body: `${what}${at}.` })
+    case "REJECTED":
+      return toast({ kind: "error", key, title: "Order rejected", body: `${what}${at}.` })
+  }
+}
 
 function updateAccount(fn: (s: Live) => Live) {
   account = fn(account)
@@ -97,6 +139,8 @@ function retryAccount(error: string) {
 function onAccountMessage(msg: AccountMessage) {
   if (msg.type === "snapshot") {
     accountAttempt = 0
+    if (hadSnapshot) void refreshTradingStatus() // missed changes while disconnected
+    hadSnapshot = true
     updateAccount((s) => ({
       ...s,
       balances: msg.balances.filter(held),
@@ -115,7 +159,11 @@ function onAccountMessage(msg: AccountMessage) {
     })
   } else if (msg.type === "order") {
     updateAccount((s) => ({ ...s, orderEvents: s.orderEvents + 1 }))
-  } else if (msg.type === "status" && msg.state === "offline") {
+    orderToast(msg.order)
+    if (msg.order.status === "FILLED") void refreshTradingStatus() // used_today_usdt moved
+  } else if (msg.type === "status") {
+    applyStatusEvent(msg)
+    if (msg.state !== "offline") return
     // The server lost Binance's stream; its reconnect sends a fresh snapshot.
     updateAccount((s) => ({
       ...s,

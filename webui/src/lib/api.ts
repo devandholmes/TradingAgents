@@ -1,5 +1,3 @@
-import { useSyncExternalStore } from "react"
-
 // --- errors ---
 
 export function describe(err: unknown): string {
@@ -83,81 +81,4 @@ export async function apiFetch<T>(
     if (init.signal?.aborted) throw err
     throw new Error(describe(err), { cause: err })
   }
-}
-
-// --- trading status (shared by the header and the Wallets tab) ---
-
-export type TradingStatus = {
-  mode: "testnet" | "live"
-  enabled: boolean
-  configured: boolean
-  can_trade: boolean
-  limits: {
-    max_order_usdt: number
-    daily_cap_usdt: number
-    allowed_symbols: string[]
-  }
-  used_today_usdt: number
-}
-
-export type TradingState = {
-  status?: TradingStatus
-  error?: string
-  /** A kill-switch change is in flight. */
-  pending: boolean
-}
-
-let trading: TradingState = { pending: false }
-const tradingListeners = new Set<() => void>()
-let tradingTimer: ReturnType<typeof setInterval> | undefined
-
-function setTrading(next: TradingState) {
-  trading = next
-  tradingListeners.forEach((l) => l())
-}
-
-export function refreshTradingStatus(): Promise<void> {
-  return apiFetch<TradingStatus>("/api/trading/status").then(
-    (status) => {
-      if (!trading.pending) setTrading({ status, pending: false })
-    },
-    (err: Error) => setTrading({ ...trading, error: err.message })
-  )
-}
-
-/** Kill switch: optimistic update, rolled back if the server refuses. */
-export async function setTradingEnabled(enabled: boolean): Promise<void> {
-  const before = trading.status
-  if (!before || trading.pending) return
-  setTrading({ status: { ...before, enabled }, pending: true })
-  try {
-    const status = await apiFetch<TradingStatus>("/api/trading/enabled", {
-      method: "POST",
-      body: JSON.stringify({ enabled }),
-    })
-    setTrading({ status, pending: false })
-  } catch (err) {
-    setTrading({
-      status: before,
-      error: (err as Error).message,
-      pending: false,
-    })
-  }
-}
-
-function subscribeTrading(cb: () => void) {
-  if (!tradingListeners.size) {
-    void refreshTradingStatus()
-    tradingTimer = setInterval(refreshTradingStatus, 30_000)
-  }
-  tradingListeners.add(cb)
-  return () => {
-    tradingListeners.delete(cb)
-    if (!tradingListeners.size) clearInterval(tradingTimer)
-  }
-}
-
-/** GET /api/trading/status, shared across components and polled every 30s while anything is mounted. */
-export function useTradingStatus(): TradingState {
-  return useSyncExternalStore(subscribeTrading, () => trading)
 }

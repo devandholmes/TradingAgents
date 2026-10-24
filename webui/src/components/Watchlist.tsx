@@ -2,7 +2,13 @@ import { memo, useState } from "react"
 import { PlusIcon, XIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import {
   InputGroup,
   InputGroupAddon,
@@ -35,7 +41,12 @@ export function Watchlist({
   return (
     <Card size="sm" className="min-h-0 gap-2">
       <CardHeader>
-        <CardTitle>Watchlist</CardTitle>
+        <CardTitle>
+          <h2>Watchlist</h2>
+        </CardTitle>
+        <CardAction className="text-2xs text-muted-foreground">
+          24h change
+        </CardAction>
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col gap-2 px-0">
         <form
@@ -111,13 +122,13 @@ const WatchRow = memo(function WatchRow({
         onClick={() => onSelect(s)}
         aria-current={selected}
         className={cn(
-          "grid w-full grid-cols-[1fr_auto] items-baseline gap-x-3 border-l-2 border-transparent py-1.5 pr-9 pl-(--card-spacing) text-left hover:bg-muted/60",
-          selected && "border-primary bg-muted"
+          "grid w-full grid-cols-[1fr_auto] items-center gap-x-3 border-l-2 border-transparent py-2 pr-9 pl-[calc(var(--card-spacing)-2px)] text-left transition-colors hover:bg-surface/70",
+          selected && "border-primary bg-surface"
         )}
       >
-        <span className="font-mono text-sm font-medium">
+        <span className="row-span-2 font-mono text-sm font-medium">
           {s.replace(/USDT$/, "")}
-          <span className="text-muted-foreground">
+          <span className="text-2xs font-normal text-muted-foreground">
             {s.endsWith("USDT") ? "/USDT" : ""}
           </span>
         </span>
@@ -126,7 +137,7 @@ const WatchRow = memo(function WatchRow({
           <span
             key={t.price}
             className={cn(
-              "rounded px-1 text-right font-mono text-sm tabular-nums",
+              "rounded px-1 text-right font-mono text-sm",
               flash
             )}
           >
@@ -135,11 +146,10 @@ const WatchRow = memo(function WatchRow({
         ) : (
           <Skeleton className="h-4 w-16" />
         )}
-        <span className="text-xs text-muted-foreground">24h</span>
         {t ? (
           <span
             className={cn(
-              "px-1 text-right font-mono text-xs tabular-nums",
+              "px-1 text-right font-mono text-2xs",
               t.pct >= 0 ? "text-up" : "text-down"
             )}
           >
@@ -154,7 +164,7 @@ const WatchRow = memo(function WatchRow({
         size="icon-xs"
         aria-label={`Remove ${s}`}
         onClick={() => onRemove(s)}
-        className="absolute top-1/2 right-2 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
+        className="absolute top-1/2 right-2 -translate-y-1/2 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
       >
         <XIcon />
       </Button>

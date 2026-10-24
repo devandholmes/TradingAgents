@@ -1,5 +1,11 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -27,7 +33,12 @@ export function Trends({ onSelect }: { onSelect: (s: string) => void }) {
   return (
     <Card size="sm" className="min-h-0 gap-2">
       <CardHeader>
-        <CardTitle>Market trends · 24h</CardTitle>
+        <CardTitle>
+          <h2>Market movers</h2>
+        </CardTitle>
+        <CardAction className="text-2xs text-muted-foreground">
+          USDT pairs, 24h
+        </CardAction>
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col px-0">
         <Tabs defaultValue="gainers" className="min-h-0 flex-1">
@@ -53,7 +64,7 @@ export function Trends({ onSelect }: { onSelect: (s: string) => void }) {
               ) : loading ? (
                 <div className="flex flex-col gap-2 px-(--card-spacing) pt-1">
                   {Array.from({ length: 6 }, (_, i) => (
-                    <Skeleton key={i} className="h-5" />
+                    <Skeleton key={i} className="h-4" />
                   ))}
                 </div>
               ) : null}
@@ -92,7 +103,7 @@ function TrendList({
           <button
             type="button"
             onClick={() => onSelect(r.symbol)}
-            className="grid w-full grid-cols-[1fr_auto_4.5rem] gap-3 px-(--card-spacing) py-1 text-left tabular-nums hover:bg-muted/60"
+            className="grid w-full grid-cols-[1fr_auto_4.5rem] gap-3 px-(--card-spacing) py-1.5 text-left transition-colors hover:bg-surface/70"
           >
             <span className="truncate font-medium">{r.symbol}</span>
             <span className="text-right text-muted-foreground">

@@ -27,10 +27,10 @@ import {
 import { cn } from "@/lib/utils"
 
 // Canvas colours can't read CSS variables, so mirror the theme tokens here.
-const UP = "#22c493"
-const DOWN = "#ef4f5a"
+const UP = "#2fcf8d" // --up
+const DOWN = "#fb575d" // --down
 const GRID = "rgba(255,255,255,0.05)"
-const TEXT = "#99a1b3"
+const TEXT = "#9299a2" // --muted-foreground
 
 type Charts = {
   candles: ISeriesApi<"Candlestick">
@@ -101,7 +101,7 @@ export function PriceChart({
           layout: {
             background: { type: ColorType.Solid, color: "transparent" },
             textColor: TEXT,
-            fontFamily: "ui-monospace, 'JetBrains Mono', Consolas, monospace",
+            fontFamily: "'Geist Mono Variable', ui-monospace, Consolas, monospace",
             fontSize: 11,
           },
           grid: { vertLines: { color: GRID }, horzLines: { color: GRID } },
@@ -199,7 +199,7 @@ export function PriceChart({
     <Card size="sm" className="min-h-[460px] gap-2 lg:min-h-0">
       <CardHeader className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <CardTitle className="flex items-baseline gap-3 font-mono">
-          <span className="text-base">{symbol}</span>
+          <h2 className="text-base">{symbol}</h2>
           {last ? (
             <span
               className={cn(
@@ -241,7 +241,7 @@ export function PriceChart({
         />
         {history.loading ? (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 text-muted-foreground">
-            <Spinner /> Loading history…
+            <Spinner /> Loading candles…
           </div>
         ) : null}
         {history.error ? (
@@ -288,7 +288,7 @@ function IndicatorStrip({
         {loading ? (
           <Skeleton className="h-4 w-full" />
         ) : (
-          `Indicators unavailable — ${error ?? "no data"}`
+          `Indicators unavailable: ${error ?? "no data"}`
         )}
       </div>
     )
@@ -326,11 +326,11 @@ function IndicatorStrip({
   ]
   return (
     <div className="flex min-h-9 flex-wrap items-center gap-x-4 gap-y-1 border-t px-(--card-spacing) pt-2 font-mono text-xs">
-      <Badge variant="outline" className={cn("uppercase", trendTone)}>
+      <Badge variant="outline" className={cn("font-sans", trendTone)}>
         Trend {data.trend}
       </Badge>
       {items.map(([label, value, tone]) => (
-        <span key={label} className="flex gap-1.5 tabular-nums">
+        <span key={label} className="flex gap-1.5">
           <span className="text-muted-foreground">{label}</span>
           <span className={tone}>{value}</span>
         </span>
