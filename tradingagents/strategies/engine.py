@@ -23,7 +23,13 @@ so paper-trading every strategy never costs the web server's event loop anything
 - ``tradingagents_ai`` trades the latest ai_signals rating (LISTEN ta_ai_signal).
 
 Metrics: 7d, 30d, 90d and 1y from daily equity (each day's last close, annualised by
-365, so every interval ranks alike); ``live`` from every bar since going live.
+365, so every interval ranks alike), only 7d and 30d for 1m and up to 90d for 5m
+(``INTERVAL_PERIODS``: their history is shorter); ``live`` from every bar since going live.
+
+Daily maintenance runs between bars, one short step at a time (``maintain``): each
+instance's stop analysis (its backtest under every risk-exit preset, over 90d and 1y)
+after seeding and then once a day, and the thinning of 1m/5m live equity points older
+than ``RETAIN_DAYS`` to one per hour.
 
 All database and CPU work runs on one worker thread, in order; the event loop only
 reads the websocket and the notifications.
@@ -49,22 +55,30 @@ from tradingagents import db
 from tradingagents.dataflows.errors import VendorUnavailableError
 from tradingagents.db import backfill
 from tradingagents.db.candles import INTERVAL_SECONDS, latest_open_time, upsert_candles
-from tradingagents.strategies.backtest import _win_rate, backtest, bars_per_year, metrics
+from tradingagents.strategies.backtest import PRESETS, _win_rate, backtest, bars_per_year, metrics
 from tradingagents.strategies.library import CATALOG, INTERVALS, Strategy, exposure_from_ratings
+from tradingagents.trading.fees import paper_fee
 
 logger = logging.getLogger(__name__)
 
-CAPITAL, FEE, SLIPPAGE = 1000.0, 0.001, 0.0002
+CAPITAL, FEE, SLIPPAGE = 1000.0, paper_fee(), 0.0002
 LOOKBACK = 1000      # bars a live target is computed over
 LIVE_BARS = 5000     # ponytail: the live metrics cover at most the last 5000 bars; read the table for more
 MAX_FILLS = 5000     # recent fills kept per instance, for the windows' trades and win rate
 DAILY_DAYS = 400     # daily equity points kept per instance (the 1y window and its baseline)
 PERIODS = {"7d": 7, "30d": 30, "90d": 90, "1y": 365}
+# Fast intervals keep less history (backfill.LOOKBACK_DAYS), so their longer windows are left out.
+INTERVAL_PERIODS = {"1m": ("7d", "30d"), "5m": ("7d", "30d", "90d")}
 STREAM_URL = "wss://data-stream.binance.vision/stream?streams="
 LOCK_KEY = 0x7A_DB_0002   # session advisory lock: one engine per database
 AI_KEY = "tradingagents_ai"
 NOTIFY_IDS = 100     # instance ids per NOTIFY, well inside its 8000-byte payload
 AI_RETRY = 5         # seconds before listening again after a lost connection
+STOP_PERIODS = {"90d": 90, "1y": 365}
+STOP_SLACK = pd.Timedelta(days=1)   # a 365-day backfill starts a bar short of a full year
+RETAIN_DAYS = {"1m": 30, "5m": 90}  # per-bar live equity points kept; older ones keep each hour's last
+RETAIN_BATCH = 5000  # equity points deleted per transaction
+MAINTAIN_PAUSE, MAINTAIN_EVERY = 0.2, 600   # seconds between maintenance steps: while work is due, idle
 
 COLUMNS = ("time", "open", "high", "low", "close", "volume")
 METRICS = ("return_pct", "sharpe", "sortino", "max_drawdown_pct", "win_rate", "exposure_pct", "trades")
@@ -92,6 +106,19 @@ _UPSERT_METRIC = (
     " ON CONFLICT (instance_id, period) DO UPDATE SET return_pct = EXCLUDED.return_pct, sharpe = EXCLUDED.sharpe,"
     " sortino = EXCLUDED.sortino, max_drawdown_pct = EXCLUDED.max_drawdown_pct, win_rate = EXCLUDED.win_rate,"
     " exposure_pct = EXCLUDED.exposure_pct, trades = EXCLUDED.trades, updated_at = now()"
+)
+_INSERT_STOP = (
+    "INSERT INTO stop_analysis (instance_id, preset, period, return_pct, sharpe, max_drawdown_pct, trades, win_rate)"
+    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+)
+# Batched: the live points of one interval's instances before a cutoff that a later point of their hour supersedes.
+_THIN = (
+    "DELETE FROM equity_points WHERE (instance_id, ts) IN ("
+    " SELECT p.instance_id, p.ts FROM equity_points p JOIN strategy_instances i ON i.id = p.instance_id"
+    " WHERE i.interval = %s AND p.source = 'live' AND p.ts < %s AND EXISTS ("
+    "  SELECT 1 FROM equity_points q WHERE q.instance_id = p.instance_id AND q.ts > p.ts"
+    "  AND q.ts < date_trunc('hour', p.ts) + interval '1 hour')"
+    " LIMIT %s)"
 )
 
 
@@ -195,6 +222,10 @@ class Engine:
         self.windows: dict[tuple, pd.DataFrame] = {}
         self.anchors: dict[tuple, pd.Timestamp | None] = {}
         self.broken = True   # (re)load from the database before the next bar
+        self.retained: pd.Timestamp | None = None    # the day equity points were last thinned
+        self.stops_due: deque[str] = deque()         # instances whose stop analysis is next
+        self.stops_checked: float | None = None      # monotonic time stops_due was last filled
+        self._stop_candles: tuple | None = None      # (series, candles) of the instance analysed last
 
     # --- startup -------------------------------------------------------------------------------
 
@@ -316,7 +347,7 @@ class Engine:
         inst.fills.extend(fills)
 
         cur = self.conn.cursor()
-        for table in ("paper_fills", "equity_points", "strategy_metrics", "instance_state"):
+        for table in ("paper_fills", "equity_points", "strategy_metrics", "instance_state", "stop_analysis"):
             cur.execute(f"DELETE FROM {table} WHERE instance_id = %s", (inst.id,))
         with cur.copy(_COPY_FILLS) as copy:
             for f in fills:
@@ -421,8 +452,7 @@ class Engine:
         """Store the series' closed candles missing since the newest stored one, from REST."""
         symbol, interval = key
         try:
-            backfill.backfill_series(self.conn, symbol, interval,
-                                     backfill.DAILY_DAYS if interval == "1d" else backfill.DAYS)
+            backfill.backfill_series(self.conn, symbol, interval, backfill.history_days(interval))
             return True
         except VendorUnavailableError as exc:
             self.conn.rollback()
@@ -504,10 +534,70 @@ class Engine:
 
     def _metric_rows(self, inst: Instance) -> list[tuple]:
         days, fills = list(inst.daily.values()), list(inst.fills)
-        rows = [(inst.id, period, *window_metrics(days, fills, inst.last_bar - pd.Timedelta(days=span), 365))
-                for period, span in PERIODS.items()]
+        rows = [(inst.id, period, *window_metrics(days, fills, inst.last_bar - pd.Timedelta(days=PERIODS[period]), 365))
+                for period in INTERVAL_PERIODS.get(inst.interval, PERIODS)]
         rows.append((inst.id, "live", *window_metrics(list(inst.live), fills, None, bars_per_year(inst.interval))))
         return rows
+
+    # --- daily maintenance: stop analysis and equity retention ---------------------------------
+
+    def maintain(self, now: pd.Timestamp | None = None) -> bool:
+        """One step of the daily work; True while more is due. Each step is short, so bars wait little."""
+        self._ensure()
+        now = pd.Timestamp.now(tz="UTC") if now is None else now
+        if self.retained != now.floor("D"):
+            self.retain(now)
+            self.retained = now.floor("D")
+            return True
+        if not self.stops_due:
+            self._stop_candles = None
+            if self.stops_checked is not None and time.monotonic() - self.stops_checked < MAINTAIN_EVERY:
+                return False
+            self.stops_checked = time.monotonic()
+            self.stops_due.extend(self._stops_due())
+        if self.stops_due and (inst := self.instances.get(self.stops_due.popleft())):
+            self.analyse_stops(inst)
+        return bool(self.stops_due)
+
+    def _stops_due(self) -> list[str]:
+        """Seeded instances (the AI's aside) without a stop analysis from the last day, grouped by series."""
+        ids = [i.id for i in self.instances.values() if i.last_bar is not None and i.strategy.key != AI_KEY]
+        due = {iid for (iid,) in self.conn.execute(
+            "SELECT i.id FROM strategy_instances i LEFT JOIN stop_analysis a ON a.instance_id = i.id"
+            " WHERE i.id = ANY(%s) GROUP BY i.id"
+            " HAVING coalesce(max(a.updated_at) > now() - interval '1 day', false) = false", (ids,))}
+        self.conn.commit()
+        return sorted(due, key=lambda iid: (self.instances[iid].symbol, self.instances[iid].interval, iid))
+
+    def analyse_stops(self, inst: Instance) -> None:
+        """Replace ``inst``'s stop analysis with ``stop_rows`` over its series' stored candles."""
+        key = (inst.symbol, inst.interval)
+        if self._stop_candles is None or self._stop_candles[0] != key:
+            self._stop_candles = (key, self._candles(*key))
+        candles = self._stop_candles[1]
+        found = stop_rows(candles, self._target(inst, candles)) if len(candles) else []
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM stop_analysis WHERE instance_id = %s", (inst.id,))
+            cur.executemany(_INSERT_STOP, [(inst.id, *row) for row in found])
+        self.conn.commit()
+
+    def retain(self, now: pd.Timestamp) -> int:
+        """Thin 1m/5m live equity points older than ``RETAIN_DAYS`` to each hour's last; the number deleted.
+
+        Batched, a transaction each; idempotent. Each day's last point stays, so the daily
+        history the engine resumes from is unchanged.
+        """
+        deleted = 0
+        for interval, days in RETAIN_DAYS.items():
+            while True:
+                count = self.conn.execute(_THIN, (interval, now - pd.Timedelta(days=days), RETAIN_BATCH)).rowcount
+                self.conn.commit()
+                deleted += count
+                if count < RETAIN_BATCH:
+                    break
+        if deleted:
+            logger.info("Thinned %d old 1m/5m equity points", deleted)
+        return deleted
 
     # --- AI signals and notifications ----------------------------------------------------------
 
@@ -541,6 +631,32 @@ class Engine:
     def _notify_update(self, ids: list[str], bar: pd.Timestamp) -> None:
         for i in range(0, len(ids), NOTIFY_IDS):
             self._notify("ta_strategy_update", {"instance_ids": ids[i:i + NOTIFY_IDS], "bar": bar.isoformat()})
+
+
+def stop_rows(candles: pd.DataFrame, target: pd.Series) -> list[tuple]:
+    """(preset, period, return_pct, sharpe, max_drawdown_pct, trades, win_rate) per preset and period.
+
+    A period runs only when the history covers it; each backtest starts flat at the
+    period's first bar (``target`` comes from the full history, so indicators are warm).
+    Metrics come from daily equity, as the leaderboard's do.
+    """
+    found = []
+    for period, days in STOP_PERIODS.items():
+        start = candles.index[-1] - pd.Timedelta(days=days)
+        if candles.index[0] > start + STOP_SLACK:
+            continue
+        window = candles.loc[start:]
+        wanted = target.reindex(window.index)
+        for preset, (_, risk) in PRESETS.items():
+            result = backtest(window, wanted, CAPITAL, FEE, SLIPPAGE, 365, risk=risk)
+            equity = result.equity
+            daily = equity.groupby(equity.index.floor("D")).tail(1)
+            if daily.index[0] != equity.index[0]:
+                daily = pd.concat([equity.iloc[:1], daily])   # from the capital it starts with
+            m = metrics(daily, result.fills, 365)
+            found.append((preset, period, _num(m["return_pct"]), _num(m["sharpe"]), _num(m["max_drawdown_pct"]),
+                          m["trades"], _num(m["win_rate"])))
+    return found
 
 
 # --- the process ---------------------------------------------------------------------------------
@@ -591,6 +707,11 @@ async def run(engine: Engine, connect=None, listen: bool = True) -> None:
                 logger.info("%s: %d instances updated", "catch-up" if item is None else " ".join(item[:2]),
                             len(changed))
 
+    async def maintain() -> None:
+        while True:   # each step waits behind the bars already queued on the one worker thread
+            more = await call(engine.maintain)
+            await asyncio.sleep(MAINTAIN_PAUSE if more else MAINTAIN_EVERY)
+
     async def listen_ai() -> None:
         while True:
             try:
@@ -606,7 +727,8 @@ async def run(engine: Engine, connect=None, listen: bool = True) -> None:
 
     try:
         await loop.run_in_executor(executor, engine.start)
-        tasks = [_reconnecting("Kline", stream_url(engine.series), connect, consume, lambda: None), trade()]
+        tasks = [_reconnecting("Kline", stream_url(engine.series), connect, consume, lambda: None), trade(),
+                 maintain()]
         await asyncio.gather(*tasks, *([listen_ai()] if listen else []))
     finally:
         await loop.run_in_executor(executor, engine.close)

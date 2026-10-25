@@ -158,13 +158,29 @@ def test_bot_routes_validate_and_need_the_token(http, sql, fake):
 
     status = http.get("/api/bot").json()
     assert status["active"]["instance_id"] == EMA and status["active"]["size_usdt"] == 5
-    assert set(status) == {"active", "position", "pnl", "trades", "in_sync", "drift"}
+    assert set(status) == {"active", "position", "pnl", "trades", "in_sync", "drift", "risk"}
     assert http.post("/api/bot/sync").status_code == 403
     assert http.post("/api/bot/sync", headers=TOKEN).json()["in_sync"]
     assert http.get("/api/bot/preview", params={"instance_id": EMA}).json()["target"] == 1
     assert http.get("/api/bot/preview", params={"instance_id": "nope:BTCUSDT:1h"}).status_code == 404
     assert http.post("/api/bot/deactivate", json={"close_position": True}, headers=TOKEN).json()["active"] is None
     assert "/api/v3/order" not in fake.paths()
+
+
+@pytest.mark.unit
+def test_bot_risk_fields_validate_and_update_the_active_bot(http, sql, fake):
+    body = {"instance_id": EMA, "size_usdt": 0.10, "stop_loss_pct": 5, "execution": "maker_first"}
+    assert http.post("/api/bot/risk", json={}, headers=TOKEN).status_code == 409   # no active bot
+    for bad in ({"stop_loss_pct": 0}, {"take_profit_pct": 50.01}, {"trailing_pct": -1}, {"execution": "limit"}):
+        assert http.post("/api/bot/activate", json={**body, **bad}, headers=TOKEN).status_code == 422, bad
+    status = http.post("/api/bot/activate", json=body, headers=TOKEN).json()
+    assert status["active"]["execution"] == "maker_first" and status["risk"]["stop_loss_pct"] == 5
+    assert http.post("/api/bot/risk", json={"trailing_pct": 3}).status_code == 403
+    assert http.post("/api/bot/risk", json={"trailing_pct": 60}, headers=TOKEN).status_code == 422
+    risk = http.post("/api/bot/risk", json={"trailing_pct": 3, "execution": "market"}, headers=TOKEN).json()
+    assert (risk["risk"]["stop_loss_pct"], risk["risk"]["trailing_pct"], risk["active"]["execution"]) == (None, 3, "market")
+    assert set(risk["risk"]) == {"stop_loss_pct", "take_profit_pct", "trailing_pct", "stop_price", "take_profit_price",
+                                 "trailing_stop_price", "peak_price", "latched", "reason"}
 
 
 @pytest.mark.unit

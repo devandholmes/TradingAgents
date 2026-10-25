@@ -6,7 +6,15 @@ import { apiFetch, describe } from "@/lib/api"
 
 export const WINDOWS = ["7d", "30d", "90d", "1y", "live"] as const
 export type StrategyWindow = (typeof WINDOWS)[number]
-export const STRATEGY_INTERVALS = ["15m", "1h", "4h", "1d"] as const
+export const STRATEGY_INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"] as const
+
+/** Fast intervals keep less history, so they only have some windows; the rest have all of them. */
+const INTERVAL_WINDOWS: Partial<Record<string, readonly StrategyWindow[]>> = {
+  "1m": ["7d", "30d", "live"],
+  "5m": ["7d", "30d", "90d", "live"],
+}
+export const windowsFor = (interval: string): readonly StrategyWindow[] =>
+  INTERVAL_WINDOWS[interval] ?? WINDOWS
 
 export type Family =
   | "trend"
@@ -343,6 +351,144 @@ export function useInstance(id: string | null, version: string | null) {
     error: state.key === key ? state.error : undefined,
     loading: !!id && state.key !== key && !fresh,
   }
+}
+
+// --- risk exits: backtested stop-loss / take-profit / trailing presets per instance ---
+
+/** Percent numbers, e.g. 5 = 5 %; null = that exit is off. */
+export type RiskParams = {
+  stop_loss_pct: number | null
+  take_profit_pct: number | null
+  trailing_pct: number | null
+}
+export type RiskKey = keyof RiskParams
+export const NO_RISK: RiskParams = {
+  stop_loss_pct: null,
+  take_profit_pct: null,
+  trailing_pct: null,
+}
+/** The server accepts 0 < pct <= 50. */
+export const MAX_RISK_PCT = 50
+
+export type StopRow = {
+  preset: string
+  label: string
+  period: "90d" | "1y"
+  return_pct: number | null
+  sharpe: number | null
+  max_drawdown_pct: number | null
+  trades: number | null
+  win_rate: number | null
+}
+/** `best`: the preset with the highest 1y Sharpe that also beats `none`; null when none does. */
+export type Stops = { rows: StopRow[]; best: string | null }
+
+const PRESET_PARTS: [RiskKey, RegExp][] = [
+  ["stop_loss_pct", /sl(\d+(?:\.\d+)?)/],
+  ["take_profit_pct", /tp(\d+(?:\.\d+)?)/],
+  ["trailing_pct", /tr(\d+(?:\.\d+)?)/],
+]
+
+/** "sl5_tp10" -> stop-loss 5 %, take-profit 10 %; "none" -> every exit off. */
+export function presetParams(preset: string): RiskParams {
+  const out = { ...NO_RISK }
+  for (const [key, re] of PRESET_PARTS) {
+    const m = re.exec(preset)
+    if (m) out[key] = Number(m[1])
+  }
+  return out
+}
+
+/** The risk inputs as typed: "" = off. */
+export type RiskDraft = Record<RiskKey, string>
+export const RISK_KEYS: RiskKey[] = ["stop_loss_pct", "take_profit_pct", "trailing_pct"]
+
+export const draftOf = (p: RiskParams): RiskDraft => ({
+  stop_loss_pct: p.stop_loss_pct?.toString() ?? "",
+  take_profit_pct: p.take_profit_pct?.toString() ?? "",
+  trailing_pct: p.trailing_pct?.toString() ?? "",
+})
+
+/** Draft -> params, with a message per field the server would refuse. */
+export function parseRisk(d: RiskDraft): {
+  params: RiskParams
+  errors: Partial<Record<RiskKey, string>>
+  valid: boolean
+} {
+  const params = { ...NO_RISK }
+  const errors: Partial<Record<RiskKey, string>> = {}
+  for (const k of RISK_KEYS) {
+    const raw = d[k].trim()
+    if (!raw) continue
+    const n = Number(raw)
+    if (!Number.isFinite(n) || n <= 0 || n > MAX_RISK_PCT)
+      errors[k] = `Enter a percent above 0 and up to ${MAX_RISK_PCT}, or leave it empty.`
+    else params[k] = n
+  }
+  return { params, errors, valid: Object.keys(errors).length === 0 }
+}
+
+export const sameRisk = (a: RiskParams, b: RiskParams) =>
+  a.stop_loss_pct === b.stop_loss_pct &&
+  a.take_profit_pct === b.take_profit_pct &&
+  a.trailing_pct === b.trailing_pct
+
+// ponytail: accepts a bare row list or {rows|presets|stops, best} until the route's shape settles.
+function toStops(raw: unknown): Stops {
+  if (Array.isArray(raw)) return { rows: raw as StopRow[], best: bestPreset(raw) }
+  const o = (raw ?? {}) as {
+    rows?: StopRow[]
+    presets?: StopRow[]
+    stops?: StopRow[]
+    best?: string | { preset?: string } | null
+  }
+  const best = typeof o.best === "string" ? o.best : (o.best?.preset ?? null)
+  return { rows: o.rows ?? o.presets ?? o.stops ?? [], best }
+}
+
+/** The contract's rule, for a server that sends rows only: highest 1y Sharpe that beats `none`. */
+function bestPreset(rows: StopRow[]): string | null {
+  const year = rows.filter((r) => r.period === "1y" && r.sharpe != null)
+  const none = year.find((r) => r.preset === "none")?.sharpe
+  if (none == null) return null
+  let best: StopRow | undefined
+  for (const r of year)
+    if (r.preset !== "none" && r.sharpe! > none && (!best || r.sharpe! > best.sharpe!)) best = r
+  return best?.preset ?? null
+}
+
+// ponytail: cached for the page load; the engine recomputes these once a day.
+const stopsCache = new Map<string, Promise<Stops>>()
+
+/** GET /api/strategies/instances/{id}/stops; `data` undefined while loading. */
+export function useStops(id: string | null): { data?: Stops; error?: string } {
+  const [state, setState] = useState<{ id: string; data?: Stops; error?: string }>()
+  useEffect(() => {
+    if (!id) return
+    let live = true
+    let p = stopsCache.get(id)
+    if (!p) {
+      p = apiFetch<unknown>(
+        `/api/strategies/instances/${encodeURIComponent(id)}/stops`
+      ).then(toStops)
+      stopsCache.set(id, p)
+      p.catch(() => stopsCache.delete(id)) // let the next open retry
+    }
+    p.then(
+      (data) => live && setState({ id, data }),
+      (err) => live && setState({ id, error: describe(err) })
+    )
+    return () => {
+      live = false
+    }
+  }, [id])
+  return state?.id === id ? state : {}
+}
+
+/** The period the presets are judged on: 1y where the history exists, else 90d. */
+export function stopsPeriod(rows: StopRow[]): StopRow["period"] | null {
+  if (rows.some((r) => r.period === "1y")) return "1y"
+  return rows.length ? "90d" : null
 }
 
 // --- /ws/strategies: ONE socket shared by the leaderboard and the bot store ---

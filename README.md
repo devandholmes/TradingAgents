@@ -184,6 +184,30 @@ TRADING_ALLOWED_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT
 
 Real orders are placed only with `TRADING_MODE=live` and live keys. The server listens on 127.0.0.1 only and refuses requests from other sites.
 
+### Running 24/7
+
+A bot only trades while the server runs. The `web` service in Docker keeps it running: Docker restarts the container if the server crashes, and the server restarts the strategy engine if that crashes (backing off from 1 s to 60 s; after 10 crashes in 10 minutes it stops trying and `/api/health` shows `"gave_up": true`).
+
+```bash
+# Stop the native tradingagents-web first: both would run the bot, and both want port 8000.
+docker compose up -d postgres web       # http://127.0.0.1:8000
+curl http://127.0.0.1:8000/api/health   # engine (alive, restarts, last_bar_at, lag_s), db, streams
+```
+
+After pulling changes, run `docker compose build web && docker compose up -d web`. The container reads `.env` and builds its database URL from `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` (URL-encode a password containing `:/@?#`). Its `~/.tradingagents` (trading state, `trades.jsonl`, the ChatGPT sign-in) is the `tradingagents_data` volume, not your native folder; set `TRADINGAGENTS_DATA_DIR` to a host folder (for example `C:/Users/<you>/.tradingagents`) to share it. A container you stop yourself (`docker compose stop`, `docker kill`) stays stopped until you start it again.
+
+**Windows, after a reboot.** Docker Desktop runs only once you sign in, so:
+
+1. Docker Desktop > Settings > General: turn on "Start Docker Desktop when you sign in to your computer".
+2. Install the sign-in shortcut (no admin needed). It starts Docker Desktop if needed, waits for it, then runs `docker compose up -d postgres web`, and logs to `%LOCALAPPDATA%\TradingAgents\autostart.log`:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\windows\install-autostart.ps1
+   # remove it: powershell -ExecutionPolicy Bypass -File scripts\windows\uninstall-autostart.ps1
+   ```
+3. For unattended restarts (Windows Update, power cuts), let Windows sign in by itself: Sysinternals Autologon, or `netplwiz` and untick "Users must enter a user name and password". Anyone at the machine then gets your session, so use it only on a machine you control and lock it (Win+L). Set Windows Update active hours, and use a UPS (plus "restore on AC power loss" in the BIOS) if power cuts are common.
+
+**A small VPS** avoids all of that. Any Linux VPS with 2 vCPUs and 4 GB of RAM will do: install Docker Engine (`sudo systemctl enable --now docker` so it starts at boot), clone the repository, copy your `.env`, and run `docker compose up -d postgres web`. The port is published on the VPS's 127.0.0.1 only; open the dashboard through an SSH tunnel (`ssh -L 8000:127.0.0.1:8000 you@your-vps`, then http://127.0.0.1:8000) and never publish it to the internet. For live keys, restrict them to the VPS's IP address.
+
 ### Required APIs
 
 TradingAgents supports multiple LLM providers. Set the API key for your chosen provider:

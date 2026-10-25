@@ -4,8 +4,8 @@ Reads run on the shared async pool; while the database is offline every route he
 answers 503 ``{"detail": "database offline"}``. One LISTEN connection (``Hub``) takes
 the engine's NOTIFYs, nothing polls: ``ta_strategy_update`` becomes one leaderboard
 frame per window, ``ta_bot_signal`` goes to the bot, and the bot's status after every
-action is pushed too. Each time it (re)connects, startup included, the bot reconciles
-to its instance's target, so a signal sent while nobody listened is not lost. Every /ws/strategies client has its own bounded queue that drops
+action is pushed too (the bot's risk monitor runs in this process as well). Each time
+it (re)connects, startup included, the bot reconciles to its instance's target, so a signal sent while nobody listened is not lost. Every /ws/strategies client has its own bounded queue that drops
 its oldest frame when full, so a slow browser never delays the others or the bot.
 POST routes need the session token (the app's middleware checks it).
 """
@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field
 
 from tradingagents import db
 from tradingagents.strategies import CATALOG
+from tradingagents.strategies.backtest import PRESETS
 from tradingagents.trading.bot import Bot, jsonable, rows
 from tradingagents.trading.streams import QUEUE_SIZE, _offer, _reconnecting, _stop
 from tradingagents.web.trading import TOKEN_TIMEOUT, _forward, valid_token
@@ -191,6 +192,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _hub = Hub(bot)
     bot.publish = _hub.publish
     _hub.start()
+    bot.start()   # the risk monitor: idle until a reconcile or status read gives it a holding to watch
     try:
         yield
     finally:
@@ -272,11 +274,54 @@ async def equity(
     return curves
 
 
+# --- risk-exit stop analysis ---
+
+
+@router.get("/strategies/instances/{instance_id}/stops")
+async def instance_stops(instance_id: InstanceId, pool: Pool) -> dict:
+    """The instance's backtest under each risk-exit preset; ``best`` beats ``none`` on Sharpe over 1y (else 90d)."""
+    async with pool.connection() as conn:
+        if not await rows(conn, "SELECT 1 FROM strategy_instances WHERE id = %s", (instance_id,)):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown strategy instance")
+        found = await rows(conn, """
+            SELECT preset, period, return_pct, sharpe, max_drawdown_pct, trades, win_rate
+            FROM stop_analysis WHERE instance_id = %s""", (instance_id,))
+    order = list(PRESETS)
+    found = sorted((r for r in found if r["preset"] in PRESETS),
+                   key=lambda r: (r["period"] != "1y", order.index(r["preset"])))
+    best = None
+    for period in ("1y", "90d"):
+        sharpe = {r["preset"]: r["sharpe"] for r in found if r["period"] == period}
+        if sharpe:
+            floor = sharpe.pop("none", None)
+            beating = {p: s for p, s in sharpe.items() if s is not None and (floor is None or s > floor)}
+            best = max(beating, key=beating.get) if beating else None
+            break
+    return {"rows": [{**jsonable(r), "label": PRESETS[r["preset"]][0]} for r in found],
+            "best": best}
+
+
 # --- the bot ---
 
-class Activation(BaseModel):
+RiskPct = Annotated[float | None, Field(gt=0, le=50, allow_inf_nan=False)]
+Execution = Literal["market", "maker_first"]
+
+
+class Risk(BaseModel):
+    """Risk exits in percent of the entry (5.0 = 5 %); null turns one off."""
+    stop_loss_pct: RiskPct = None
+    take_profit_pct: RiskPct = None
+    trailing_pct: RiskPct = None
+
+
+class Activation(Risk):
     instance_id: str = Field(max_length=64)
     size_usdt: float = Field(gt=0, allow_inf_nan=False)
+    execution: Execution = "market"
+
+
+class RiskUpdate(Risk):
+    execution: Execution | None = None   # null keeps the bot's execution
 
 
 class Deactivation(BaseModel):
@@ -291,9 +336,20 @@ async def bot_status() -> dict:
 @router.post("/bot/activate")
 async def activate_bot(body: Activation) -> dict:
     try:
-        return await get_bot().activate(body.instance_id, body.size_usdt)
+        return await get_bot().activate(body.instance_id, body.size_usdt, stop_loss_pct=body.stop_loss_pct,
+                                        take_profit_pct=body.take_profit_pct, trailing_pct=body.trailing_pct,
+                                        execution=body.execution)
     except LookupError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown strategy instance") from None
+
+
+@router.post("/bot/risk")
+async def set_bot_risk(body: RiskUpdate) -> dict:
+    """Replace the active bot's risk exits (all three; null turns one off), and its execution if given."""
+    try:
+        return await get_bot().set_risk(body.stop_loss_pct, body.take_profit_pct, body.trailing_pct, body.execution)
+    except LookupError:
+        raise HTTPException(status.HTTP_409_CONFLICT, "no active bot") from None
 
 
 @router.post("/bot/deactivate")

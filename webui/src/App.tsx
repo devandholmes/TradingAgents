@@ -18,6 +18,7 @@ import { Watchlist } from "@/components/Watchlist"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { LAG_WARN_S, useHealth } from "@/lib/health"
 import { useStreamStatus, type Interval } from "@/lib/market"
 import { installChatShortcut, navigate, useRoute, type Tab } from "@/lib/nav"
 import { cn } from "@/lib/utils"
@@ -83,6 +84,7 @@ export default function App() {
             ))}
           </TabsList>
           <div className="ml-auto flex h-12 items-center gap-4">
+            <EngineHealth />
             <MarketStatus />
             <TradingControl />
           </div>
@@ -190,6 +192,68 @@ function MarketStatus() {
         : status === "closed"
           ? "Reconnecting…"
           : "Connecting…"}
+    </span>
+  )
+}
+
+const ago = (iso: string) => {
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000))
+  return s < 120 ? `${s} s ago` : `${Math.round(s / 60)} min ago`
+}
+
+/** Server, database and strategy engine at a glance; the detail sits in the tooltip. */
+function EngineHealth() {
+  const { health, error } = useHealth()
+  const e = health?.engine
+  const level = !health
+    ? error
+      ? "down"
+      : "pending"
+    : !health.ok || health.db === false || e?.alive === false
+      ? "down"
+      : (e?.lag_s ?? 0) > LAG_WARN_S
+        ? "warn"
+        : "ok"
+  const label = {
+    pending: "Checking…",
+    ok: e ? "Engine running" : "Server up",
+    warn: "Engine behind",
+    down: !health ? "Server down" : health.db === false ? "Database down" : "Engine stopped",
+  }[level]
+  const detail = health
+    ? [
+        e &&
+          `Engine: ${e.alive ? "running" : "stopped"}, ${e.restarts} restart${e.restarts === 1 ? "" : "s"}`,
+        e?.last_bar_at && `Last bar processed ${ago(e.last_bar_at)}`,
+        e?.lag_s != null && `Lag ${Math.round(e.lag_s)} s`,
+        health.db != null && `Database: ${health.db ? "up" : "down"}`,
+        health.streams?.price && `Price stream: ${health.streams.price}`,
+        health.streams?.account && `Account stream: ${health.streams.account}`,
+        "Checked every minute",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : (error ?? "Checking the server…")
+  return (
+    <span
+      className="flex items-center gap-1.5 text-xs text-muted-foreground"
+      role="status"
+      title={detail}
+    >
+      <span
+        aria-hidden
+        className={cn(
+          "size-1.5 rounded-full",
+          level === "ok"
+            ? "bg-up"
+            : level === "warn"
+              ? "bg-warn"
+              : level === "down"
+                ? "bg-down"
+                : "animate-pulse bg-primary"
+        )}
+      />
+      <span className="sr-only sm:not-sr-only">{label}</span>
     </span>
   )
 }

@@ -13,7 +13,7 @@ from collections.abc import Iterable
 
 import psycopg
 
-INTERVAL_SECONDS = {"15m": 900, "1h": 3600, "4h": 4 * 3600, "1d": 86400}
+INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 4 * 3600, "1d": 86400}
 
 _UPSERT = """
 INSERT INTO candles (symbol, interval, open_time, open, high, low, close, volume)

@@ -43,7 +43,8 @@ class TradeRejected(Exception):
 class OrderRequest(BaseModel):
     symbol: str = Field(pattern=SYMBOL_PATTERN)
     side: Literal["BUY", "SELL"]
-    type: Literal["MARKET", "LIMIT"]
+    # LIMIT_MAKER is post-only: Binance rejects it rather than let it take liquidity.
+    type: Literal["MARKET", "LIMIT", "LIMIT_MAKER"]
     quantity: float | None = Field(default=None, gt=0)
     quote_amount: float | None = Field(default=None, gt=0)
     price: float | None = Field(default=None, gt=0)
@@ -60,8 +61,8 @@ class OrderRequest(BaseModel):
             raise ValueError("give exactly one of quantity or quote_amount")
         if self.quote_amount is not None and self.type != "MARKET":
             raise ValueError("quote_amount is only for MARKET orders")
-        if self.type == "LIMIT" and self.price is None:
-            raise ValueError("a LIMIT order needs a price")
+        if self.type != "MARKET" and self.price is None:
+            raise ValueError(f"a {self.type} order needs a price")
         if self.type == "MARKET" and self.price is not None:
             raise ValueError("a MARKET order takes no price")
         return self
@@ -134,7 +135,9 @@ def order_params(req: OrderRequest, rules: SymbolRules, price: float, reference:
                     f"limit price {_text(unit)} is too far from the market {_text(ref)}: "
                     f"Binance accepts {req.side} limits between {low:.2f} and {high:.2f}"
                 )
-        params |= {"price": _text(unit), "timeInForce": req.time_in_force}
+        params["price"] = _text(unit)
+        if req.type == "LIMIT":   # Binance refuses a timeInForce on LIMIT_MAKER
+            params["timeInForce"] = req.time_in_force
     if (not market or rules.min_notional_market) and qty * unit < rules.min_notional:
         raise TradeRejected(f"order value {_text(qty * unit)} is below the {_text(rules.min_notional)} minimum")
     return params

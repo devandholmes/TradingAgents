@@ -47,6 +47,7 @@ import {
   STRATEGY_INTERVALS,
   WINDOWS,
   isOffline,
+  windowsFor,
   reloadBoard,
   useCatalog,
   useEquity,
@@ -225,7 +226,10 @@ export default function StrategiesWorkspace() {
             <Filter
               label="Window"
               value={win}
-              options={WINDOWS.map((w) => [w, w === "live" ? "Live" : w])}
+              options={(interval === "all" ? WINDOWS : windowsFor(interval)).map((w) => [
+                w,
+                w === "live" ? "Live" : w,
+              ])}
               onChange={(v) => {
                 setWin(v as StrategyWindow)
                 setShowAll(false)
@@ -253,6 +257,8 @@ export default function StrategiesWorkspace() {
               onChange={(v) => {
                 setIv(v)
                 setShowAll(false)
+                // 1m and 5m keep less history: fall back to a window they have.
+                if (v !== "all" && !windowsFor(v).includes(win)) setWin("30d")
               }}
             />
           </div>

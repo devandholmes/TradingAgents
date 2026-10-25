@@ -21,6 +21,36 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # The dashboard, its strategy engine and the bot, 24/7: docker compose up -d postgres web.
+  # Stop the native server first; both would run the bot and want port 8000.
+  # The database URL is built from POSTGRES_* (URL-encode a password with :/@?# in it).
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    init: true   # the server is not PID 1: a crash ends the container and the restart policy brings it back
+    env_file:
+      - .env
+    environment:
+      TRADINGAGENTS_DATABASE_URL: postgresql://${POSTGRES_USER:-tradingagents}:${POSTGRES_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-tradingagents}
+      TRADINGAGENTS_WEB_HOST: 0.0.0.0
+      TRADINGAGENTS_WEB_PORT: "8000"
+    ports:
+      - "127.0.0.1:8000:8000"   # the Host check allows 127.0.0.1/localhost only
+    volumes:
+      # trading_state.json, trades.jsonl and the ChatGPT sign-in, as in ~/.tradingagents natively.
+      - ${TRADINGAGENTS_DATA_DIR:-tradingagents_data}:/home/appuser/.tradingagents
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+
   tradingagents:
     build: .
     env_file:

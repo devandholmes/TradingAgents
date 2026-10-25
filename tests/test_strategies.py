@@ -11,6 +11,7 @@ import pytest
 
 from tradingagents.strategies import (
     CATALOG,
+    INTERVALS,
     backtest,
     bars_per_year,
     exposure_from_ratings,
@@ -61,7 +62,7 @@ def test_catalog_matches_contract():
         "tradingagents_ai": {},
     }
     assert CATALOG["tradingagents_ai"].intervals == ("1d",)
-    assert CATALOG["sma_cross"].intervals == ("15m", "1h", "4h", "1d")
+    assert CATALOG["sma_cross"].intervals == ("1m", "5m", "15m", "1h", "4h", "1d")
 
 
 @pytest.mark.unit
@@ -263,7 +264,7 @@ def test_metrics_of_a_flat_curve_have_no_ratios():
 
 @pytest.mark.unit
 def test_bars_per_year():
-    assert [bars_per_year(i) for i in ("15m", "1h", "4h", "1d")] == [35040, 8760, 2190, 365]
+    assert [bars_per_year(i) for i in INTERVALS] == [525600, 105120, 35040, 8760, 2190, 365]
     for bad in ("1M", "h", "0h", "15x"):
         with pytest.raises(ValueError):
             bars_per_year(bad)

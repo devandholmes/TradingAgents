@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import json
 import math
+import time
 from datetime import UTC, datetime
 
 import pandas as pd
@@ -272,3 +273,39 @@ def test_reconnect_fetches_the_missed_bars(engine, conn, runner, monkeypatch):
     live = [pd.Timestamp(t) for (t,) in conn.execute(
         "SELECT ts FROM equity_points WHERE instance_id = %s AND source = 'live' ORDER BY ts", (iid,))]
     assert live == [_ts(r) for r in HOURLY[SEEDED:SEEDED + 4]]
+
+
+@pytest.mark.unit
+def test_backfill_lookback_per_interval():
+    assert {i: backfill.history_days(i) for i in ("1m", "5m", "15m", "1h", "4h", "1d")} == {
+        "1m": 30, "5m": 90, "15m": 365, "1h": 365, "4h": 365, "1d": backfill.DAILY_DAYS}
+    assert backfill.history_days("1m", 7) == 7
+    assert backfill.history_days("1d", 30) == backfill.DAILY_DAYS
+
+
+@pytest.mark.unit
+def test_fast_intervals_store_their_periods_and_keep_up_with_1m_closes(conn, url):
+    """1m and 5m instances store only the windows their history covers, and a 1m close trades well inside 10 s."""
+    minutes, fives = _series(1201, 60), _series(1200, 300)
+    with conn.transaction():
+        candles.upsert_candles(conn, SYMBOL, "1m", minutes[:-1])
+        candles.upsert_candles(conn, SYMBOL, "5m", fives)
+    eng = engine_mod.Engine(url, symbols=[SYMBOL], intervals=("1m", "5m"))
+    try:
+        eng.start(fetch=False)
+        assert len(eng.instances) == 12 * 2   # every strategy but the daily AI
+        periods = {}
+        for iid, period in conn.execute("SELECT instance_id, period FROM strategy_metrics WHERE instance_id = ANY(%s)",
+                                        (list(eng.instances),)):
+            periods.setdefault(iid.rsplit(":", 1)[1], set()).add(period)
+        assert periods == {"1m": {"7d", "30d", "live"}, "5m": {"7d", "30d", "90d", "live"}}
+
+        began = time.perf_counter()
+        changed = eng.on_bar(SYMBOL, "1m", minutes[-1])
+        took = time.perf_counter() - began
+        assert len(changed) == 12
+        assert eng.instances[f"ema_cross:{SYMBOL}:1m"].last_bar == _ts(minutes[-1])
+        print(f"\n1m close for 12 instances: {took * 1000:.0f} ms")
+        assert took < 2   # 4 symbols x (1m + 5m) closing together stays well under 10 s
+    finally:
+        eng.close()

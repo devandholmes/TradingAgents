@@ -85,6 +85,8 @@ def test_status_shape(http, fake):
         "limits": {"max_order_usdt": 50.0, "daily_cap_usdt": 200.0,
                    "allowed_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]},
         "used_today_usdt": 0.0,
+        # From the account's commission rates; the testnet has no SAPI to say whether BNB pays.
+        "fees": {"maker": 0.001, "taker": 0.001, "bnb_discount": None, "source": "binance"},
     }
 
 
