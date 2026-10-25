@@ -26,7 +26,7 @@ import pandas as pd
 
 Family = Literal["trend", "mean_reversion", "breakout", "momentum", "accumulation", "benchmark", "ai"]
 
-INTERVALS: tuple[str, ...] = ("15m", "1h", "4h", "1d")
+INTERVALS: tuple[str, ...] = ("1m", "5m", "15m", "1h", "4h", "1d")
 
 # TradingAgents rating -> exposure. Hold (and any unparsed rating) keeps the previous exposure.
 RATING_EXPOSURE: dict[str, float] = {"buy": 1.0, "overweight": 0.75, "underweight": 0.25, "sell": 0.0}

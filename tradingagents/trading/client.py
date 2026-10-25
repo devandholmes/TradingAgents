@@ -68,6 +68,8 @@ class SymbolRules:
     bid_up: Decimal = Decimal(0)
     ask_down: Decimal = Decimal(0)
     ask_up: Decimal = Decimal(0)
+    base_asset: str = ""
+    quote_asset: str = ""
 
     @classmethod
     def parse(cls, info: dict) -> SymbolRules:
@@ -102,6 +104,8 @@ class SymbolRules:
             bid_up=Decimal(side.get("bidMultiplierUp", up)),
             ask_down=Decimal(side.get("askMultiplierDown", down)),
             ask_up=Decimal(side.get("askMultiplierUp", up)),
+            base_asset=info.get("baseAsset", ""),
+            quote_asset=info.get("quoteAsset", ""),
         )
 
 
@@ -203,6 +207,11 @@ class SpotClient:
     async def last_price(self, symbol: str) -> float:
         return float((await self.public("/api/v3/ticker/price", {"symbol": symbol}))["price"])
 
+    async def book_ticker(self, symbol: str) -> tuple[float, float]:
+        """Best bid and best ask."""
+        book = await self.public("/api/v3/ticker/bookTicker", {"symbol": symbol})
+        return float(book["bidPrice"]), float(book["askPrice"])
+
     async def account(self) -> dict:
         return await self.signed("GET", "/api/v3/account", {"omitZeroBalances": "true"})
 
@@ -210,8 +219,25 @@ class SpotClient:
         return await self.signed("GET", "/api/v3/openOrders", {"symbol": symbol} if symbol else None)
 
     async def new_order(self, params: dict) -> dict:
-        # RESULT carries status and executed/cumulative quantities without the fills list.
-        return await self.signed("POST", "/api/v3/order", {**params, "newOrderRespType": "RESULT"})
+        # FULL adds the immediate fills, each with its commission and commission asset.
+        return await self.signed("POST", "/api/v3/order", {**params, "newOrderRespType": "FULL"})
+
+    async def get_order(self, symbol: str, order_id: int) -> dict:
+        return await self.signed("GET", "/api/v3/order", {"symbol": symbol, "orderId": order_id})
+
+    async def order_trades(self, symbol: str, order_id: int) -> list[dict]:
+        """The account's trades of one order, each with its commission (fills that came after the placing)."""
+        return await self.signed("GET", "/api/v3/myTrades", {"symbol": symbol, "orderId": order_id})
+
+    async def commission_rates(self, symbol: str) -> dict:
+        return await self.signed("GET", "/api/v3/account/commission", {"symbol": symbol})
+
+    async def bnb_burn(self) -> dict:
+        """Whether spot fees are paid in BNB. SAPI: live only, the testnet has no /sapi routes."""
+        return await self.signed("GET", "/sapi/v1/bnbBurn")
 
     async def cancel_order(self, symbol: str, order_id: int) -> dict:
         return await self.signed("DELETE", "/api/v3/order", {"symbol": symbol, "orderId": order_id})
+
+    async def cancel_client_order(self, symbol: str, client_id: str) -> dict:
+        return await self.signed("DELETE", "/api/v3/order", {"symbol": symbol, "origClientOrderId": client_id})

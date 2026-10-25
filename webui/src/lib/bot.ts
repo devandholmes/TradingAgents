@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react"
 
 import { apiFetch, describe } from "@/lib/api"
 import { fmtPrice } from "@/lib/market"
-import { retainStrategiesSocket } from "@/lib/strategies"
+import { retainStrategiesSocket, type RiskParams } from "@/lib/strategies"
 import { toast } from "@/lib/toast"
 import { refreshTradingStatus } from "@/lib/tradingStatus"
 
@@ -20,6 +20,30 @@ export type BotTrade = {
   real: boolean
   status: string
   order_id: number | null
+  /** Why it failed, or which risk exit sold ("stop_loss" | "take_profit" | "trailing_stop"). */
+  reason: string | null
+  /** Commission actually paid (live: from the order's fills; paper: the modelled USDT fee). */
+  fee?: number | null
+  fee_asset?: string | null
+}
+
+/** How live orders are placed. Risk exits always sell at market. */
+export type Execution = "market" | "maker_first"
+
+export const RISK_EXIT_LABEL: Record<string, string> = {
+  stop_loss: "Stop-loss",
+  take_profit: "Take-profit",
+  trailing_stop: "Trailing stop",
+}
+
+/** The active bot's risk exits and the prices they trigger at (null = off or no position). */
+export type BotRisk = RiskParams & {
+  stop_price: number | null
+  take_profit_price: number | null
+  trailing_stop_price: number | null
+  peak_price: number | null
+  /** A risk exit sold: the bot stays flat until the strategy's own exit clears it. */
+  latched: boolean
   reason: string | null
 }
 
@@ -33,6 +57,7 @@ export type BotActive = {
   activated_at: string
   /** The instance's current target exposure, 0..1; null until the engine has seeded it. */
   target: number | null
+  execution?: Execution
 }
 
 /** Exposure gaps up to this count as in sync (the server's TOLERANCE): never worth an order. */
@@ -58,6 +83,8 @@ export type BotStatus = {
   in_sync: boolean
   /** Target minus the bot's exposure, -1..1. */
   drift: number
+  /** Absent on a server without risk exits. */
+  risk?: BotRisk
 }
 
 export type BotState = {
@@ -105,6 +132,14 @@ const fmtQty = (n: number) =>
 function tradeToast(t: BotTrade) {
   const symbol = t.instance_id.split(":")[1] ?? ""
   const key = `bot:${t.id}`
+  const exit = t.reason ? RISK_EXIT_LABEL[t.reason] : undefined
+  if (exit && t.status !== "rejected" && t.status !== "error")
+    return toast({
+      kind: "info",
+      key,
+      title: `${exit} sold ${fmtQty(t.qty)} ${symbol}`,
+      body: `${t.real ? "Live order" : "Paper fill"} at ${fmtPrice(t.price)} for ${t.quote.toFixed(2)} USDT. The bot stays out until the strategy exits by itself.`,
+    })
   if (t.status === "rejected" || t.status === "error")
     return toast({
       kind: "error",
@@ -172,10 +207,17 @@ async function post(path: string, body: unknown): Promise<BotStatus> {
 }
 
 /** Point the bot at one instance; the server picks paper or live from the size. Throws Error(detail). */
-export async function activateBot(instanceId: string, sizeUsdt: number) {
+export async function activateBot(
+  instanceId: string,
+  sizeUsdt: number,
+  risk: RiskParams,
+  execution: Execution
+) {
   const s = await post("/api/bot/activate", {
     instance_id: instanceId,
     size_usdt: sizeUsdt,
+    ...risk,
+    execution,
   })
   const a = s.active
   toast({
@@ -197,6 +239,18 @@ export async function syncBot() {
     title: s.in_sync ? "Bot back in sync" : "Bot still out of sync",
     body: s.in_sync ? undefined : (s.trades[0]?.reason ?? undefined),
   })
+}
+
+/** Change the active bot's risk exits (null turns one off). Throws Error(detail). */
+export async function setBotRisk(risk: RiskParams) {
+  setBot({ ...bot, pending: true })
+  try {
+    await apiFetch("/api/bot/risk", { method: "POST", body: JSON.stringify(risk) })
+  } finally {
+    setBot({ ...bot, pending: false })
+  }
+  await loadBot()
+  toast({ kind: "success", key: "bot:risk", title: "Risk exits saved" })
 }
 
 /** What activating an instance starts from: its current target and what the bot already holds of it. */

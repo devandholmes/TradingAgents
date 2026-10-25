@@ -28,13 +28,15 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { fmtPct, fmtPrice } from "@/lib/market"
 import {
-  WINDOWS,
   toSec,
   useEquity,
   useInstance,
+  useStops,
+  windowsFor,
   type Fill,
   type LeaderRow,
   type Metrics,
+  type StopRow,
 } from "@/lib/strategies"
 import { cn } from "@/lib/utils"
 
@@ -100,6 +102,7 @@ function Detail({
   const lines = useMemo(() => [{ id, color: SERIES_COLORS[0] }], [id])
   const d = detail.data
   const liveSince = row.live_since ? toSec(row.live_since) : undefined
+  const windows = windowsFor(row.interval)
 
   return (
     <>
@@ -173,7 +176,7 @@ function Detail({
                   <th scope="col" className="text-left">
                     <span className="sr-only">Metric</span>
                   </th>
-                  {WINDOWS.map((w) => (
+                  {windows.map((w) => (
                     <th
                       key={w}
                       scope="col"
@@ -190,7 +193,7 @@ function Detail({
                     <th scope="row" className="text-left font-sans font-normal text-muted-foreground">
                       {label}
                     </th>
-                    {WINDOWS.map((w) => {
+                    {windows.map((w) => {
                       const m = d?.metrics?.[w]
                       return (
                         <td
@@ -228,6 +231,8 @@ function Detail({
           </p>
         </section>
 
+        <RiskExits id={id} />
+
         <Fills fills={d?.recent_fills} />
       </div>
 
@@ -238,6 +243,126 @@ function Detail({
         </Button>
       </SheetFooter>
     </>
+  )
+}
+
+const STOP_COLUMNS: [string, (r: StopRow) => string, ((r: StopRow) => string)?][] = [
+  ["Return", (r) => fmtPct(r.return_pct), (r) => tone(r.return_pct)],
+  ["Sharpe", (r) => fmtNum(r.sharpe)],
+  ["Max drawdown", (r) => fmtDrawdown(r.max_drawdown_pct)],
+  ["Win rate", (r) => fmtRate(r.win_rate)],
+  ["Trades", (r) => (r.trades == null ? "—" : String(r.trades))],
+]
+const PERIOD_LABEL = { "1y": "1 year", "90d": "90 days" } as const
+
+/** The strategy backtested with each risk-exit preset, the best one highlighted. */
+function RiskExits({ id }: { id: string }) {
+  const stops = useStops(id)
+  const [chosen, setChosen] = useState<"1y" | "90d">("1y")
+  const rows = stops.data?.rows ?? []
+  const periods = (["1y", "90d"] as const).filter((p) => rows.some((r) => r.period === p))
+  const period = periods.includes(chosen) ? chosen : periods[0]
+  const shown = rows.filter((r) => r.period === period)
+  const best = stops.data?.best ?? null
+
+  return (
+    <section aria-labelledby="detail-risk" className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <h3 id="detail-risk" className="text-title font-semibold">
+          Risk exits
+        </h3>
+        {periods.length > 1 && (
+          <ToggleGroup
+            type="single"
+            size="sm"
+            variant="outline"
+            value={period}
+            onValueChange={(v) => v && setChosen(v as "1y" | "90d")}
+            aria-label="Backtest period"
+          >
+            {periods.map((p) => (
+              <ToggleGroupItem key={p} value={p} className="text-xs">
+                {PERIOD_LABEL[p]}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        )}
+      </div>
+      <p className="max-w-[65ch] text-xs/relaxed text-muted-foreground">
+        The same strategy, backtested with automatic exits on the live price. A stop-loss sells
+        after a set fall from the buy price, a take-profit after a set rise, and a trailing stop
+        after a set fall from the highest price since buying. After an exit it waits for the
+        strategy's own next entry. This shows whether a stop protects this strategy or just cuts
+        its winners short.
+      </p>
+      {stops.error ? (
+        <p className="text-xs text-muted-foreground">Unavailable: {stops.error}</p>
+      ) : !stops.data ? (
+        <Skeleton className="h-28 w-full" />
+      ) : !period ? (
+        <p className="py-2 text-xs text-muted-foreground">
+          Not backtested yet. The engine runs these after the strategy's own backtest, then once a
+          day.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <caption className="sr-only">
+              Backtest over {PERIOD_LABEL[period]} for each risk-exit rule
+              {best ? "; the best is marked" : ""}
+            </caption>
+            <thead className="text-2xs text-muted-foreground">
+              <tr className="[&>th]:px-1.5 [&>th]:pb-1 [&>th]:font-normal">
+                <th scope="col" className="text-left">
+                  Rule
+                </th>
+                {STOP_COLUMNS.map(([label]) => (
+                  <th key={label} scope="col" className="text-right">
+                    {label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="font-mono">
+              {shown.map((r) => {
+                const isBest = r.preset === best
+                return (
+                  <tr
+                    key={r.preset}
+                    className={cn(
+                      "[&>*]:border-t [&>*]:border-border/60 [&>*]:px-1.5 [&>*]:py-1",
+                      isBest && "bg-up/10",
+                      r.preset === "none" && "text-muted-foreground"
+                    )}
+                  >
+                    <th scope="row" className="text-left font-sans font-normal">
+                      <span className="flex items-center gap-1.5">
+                        {r.preset === "none" ? "No exits" : r.label}
+                        {isBest && (
+                          <Badge variant="outline" className="h-4 border-up/50 px-1 text-2xs text-up">
+                            Best
+                          </Badge>
+                        )}
+                      </span>
+                    </th>
+                    {STOP_COLUMNS.map(([label, fmt, cls]) => (
+                      <td key={label} className={cn("text-right", cls?.(r))}>
+                        {fmt(r)}
+                      </td>
+                    ))}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          <p className="mt-1 text-2xs text-muted-foreground">
+            {best
+              ? "Best: the highest one-year Sharpe among the rules that beat trading without exits."
+              : "No rule beat trading without exits over the last year."}
+          </p>
+        </div>
+      )}
+    </section>
   )
 }
 

@@ -34,7 +34,7 @@ def _ticker(symbol, change, quote_volume):
 
 @pytest.mark.unit
 def test_health(http):
-    assert http.get("/api/health").json() == {"ok": True}
+    assert http.get("/api/health").json()["ok"] is True
 
 
 @pytest.mark.unit

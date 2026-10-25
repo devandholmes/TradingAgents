@@ -21,7 +21,8 @@ from tests.test_trading_guard import FakeBinance, audit, make_service
 from tradingagents import db
 from tradingagents.db import testing
 from tradingagents.trading import TradeRejected, service as service_module, streams
-from tradingagents.trading.bot import FEE, SLIPPAGE, Bot
+from tradingagents.trading.bot import SLIPPAGE, Bot
+from tradingagents.trading.fees import DEFAULT_PAPER_FEE as FEE
 from tradingagents.web.strategies import Hub
 
 BTC = "ema_cross:BTCUSDT:1h"

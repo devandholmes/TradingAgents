@@ -2,7 +2,8 @@
 
 Runs as a process of its own, never inside the web server. For each allowed
 symbol (``TRADING_ALLOWED_SYMBOLS``) and interval it resumes after the newest
-stored candle, or starts ``--days`` back for a series with none, and pages
+stored candle, or starts its interval's lookback (``history_days``; ``--days``
+overrides it) back for a series with none, and pages
 through the public klines endpoint 1000 candles at a time up to the last
 closed candle. Each page is committed as it lands, so an interrupted run loses
 at most one page and the next run carries on from there. Requests are paced and
@@ -32,6 +33,8 @@ logger = logging.getLogger(__name__)
 DAYS = 365
 # Daily candles reach further back, so the agents' indicators (1000 days of warm-up) read them too.
 DAILY_DAYS = INDICATOR_WARMUP_DAYS + DAYS
+# Fast intervals keep less history: 30 days of 1m is already 43200 candles a symbol.
+LOOKBACK_DAYS = {"1m": 30, "5m": 90, "1d": DAILY_DAYS}
 PAUSE = 0.2   # seconds between requests: about 10 request weight a second against Binance's 6000 a minute
 RETRY_PAUSES = (5, 15, 45)
 
@@ -46,6 +49,13 @@ def _klines(pair: str, interval: str, start_ms: int, end_ms: int) -> list[dict]:
             logger.warning("%s %s: %s; retrying in %ss", pair, interval, exc, pause)
             time.sleep(pause)
     raise AssertionError("unreachable")
+
+
+def history_days(interval: str, days: int | None = None) -> int:
+    """Days of history a new ``interval`` series starts with: ``days`` if given, daily never under ``DAILY_DAYS``."""
+    if days is None:
+        return LOOKBACK_DAYS.get(interval, DAYS)
+    return max(days, DAILY_DAYS) if interval == "1d" else days
 
 
 def backfill_series(conn, pair: str, interval: str, days: int, now: float | None = None) -> int:
@@ -74,7 +84,8 @@ def main(argv: list[str] | None = None) -> None:
     from tradingagents.trading.guard import Limits
 
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--days", type=int, default=DAYS, help=f"history for a new series (default {DAYS})")
+    parser.add_argument("--days", type=int, help=f"history for a new series (default: 1m 30, 5m 90, 1d "
+                                                 f"{DAILY_DAYS}, others {DAYS})")
     parser.add_argument("--symbols", help="comma-separated pairs (default TRADING_ALLOWED_SYMBOLS)")
     parser.add_argument("--intervals", default=",".join(INTERVAL_SECONDS), help="comma-separated intervals")
     args = parser.parse_args(argv)
@@ -92,9 +103,8 @@ def main(argv: list[str] | None = None) -> None:
     with connect() as conn:
         for pair in symbols:
             for interval in intervals:
-                days = max(args.days, DAILY_DAYS) if interval == "1d" else args.days
                 try:
-                    fetched = backfill_series(conn, pair, interval, days)
+                    fetched = backfill_series(conn, pair, interval, history_days(interval, args.days))
                 except VendorUnavailableError as exc:
                     conn.rollback()
                     print(f"{pair:<10} {interval:<8} failed: {describe(exc)}")

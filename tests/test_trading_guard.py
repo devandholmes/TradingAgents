@@ -64,6 +64,15 @@ class FakeBinance:
                 "origQty": "0.001", "executedQty": "0", "cummulativeQuoteQty": "0",
                 "status": "CANCELED", "type": "LIMIT", "side": "BUY", "transactTime": 1_700_000_000_000,
             })
+        if path == "/api/v3/account/commission":
+            return httpx.Response(200, json={
+                "symbol": params["symbol"],
+                "standardCommission": {"maker": "0.00100000", "taker": "0.00100000", "buyer": "0", "seller": "0"},
+                "taxCommission": {"maker": "0", "taker": "0", "buyer": "0", "seller": "0"},
+                "specialCommission": {"maker": "0", "taker": "0", "buyer": "0", "seller": "0"},
+                "discount": {"enabledForAccount": True, "enabledForSymbol": True,
+                             "discountAsset": "BNB", "discount": "0.75000000"},
+            })
         if path == "/api/v3/openOrders":
             return httpx.Response(200, json=[{
                 "symbol": "BTCUSDT", "orderId": 7, "price": "90000.00", "origQty": "0.001",

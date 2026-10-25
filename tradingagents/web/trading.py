@@ -46,7 +46,8 @@ router = APIRouter(prefix="/api", tags=["trading"])
 
 @router.get("/trading/status")
 async def trading_status(service: Service) -> dict:
-    return await service.status()
+    # fees: {maker, taker, bnb_discount, source}, cached an hour by the service.
+    return {**await service.status(), "fees": await service.fees()}
 
 
 @router.post("/trading/enabled")

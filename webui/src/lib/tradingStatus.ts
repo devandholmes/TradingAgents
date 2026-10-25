@@ -20,6 +20,13 @@ export type TradingStatus = {
     allowed_symbols: string[]
   }
   used_today_usdt: number
+  /** The account's commission rates as fractions (0.001 = 0.1 %); bnb_discount null where unknown (testnet). */
+  fees?: {
+    maker: number | null
+    taker: number | null
+    bnb_discount: boolean | null
+    source?: string
+  }
 }
 
 export type TradingState = {
